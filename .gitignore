@@ -1,0 +1,11 @@
+node_modules/
+*.tgz
+.env
+.env.*
+*.log
+coverage/
+data/
+managed.yaml
+state.json
+kernel.json
+*.exe

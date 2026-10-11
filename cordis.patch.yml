@@ -1,0 +1,4 @@
+- insert:
+    - id: dsh-mihomo
+      name: '@local/dsh-mihomo'
+      config: {}

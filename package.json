@@ -1,0 +1,53 @@
+{
+  "name": "@local/dsh-mihomo",
+  "version": "1.2.1",
+  "private": true,
+  "description": "Managed Mihomo subscriptions and process-only HTTP proxy for DSH",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "controller.js",
+    "policy.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY.md",
+    "test/*.test.js"
+  ],
+  "dependencies": {
+    "fflate": "^0.8.2",
+    "undici": "^8.10.0",
+    "yaml": "^2.8.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

@@ -1,0 +1,101 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { parseNodes, parseSubscription, controlledConfig, sanitizeDns, isLocalHost, coreEnvironment, validateSubscriptionUrl, redactLog } from '../policy.js';
+const fixture = 'proxies:\n  - name: example\n    type: socks5\n    server: example.com\n    port: 443\n';
+
+test('imports nodes, ignoring dangerous top-level subscription settings',()=>{
+  const nodes = parseNodes(fixture+'tun:\n  enable: true\nexternal-controller: 0.0.0.0:9090\nlisteners:\n  - port: 8888\nscript: evil\n');
+  const conf = controlledConfig(nodes,{mixedPort:30001,apiPort:30002,apiSecret:'secret',proxyPassword:'password',selected:'example'});
+  assert.equal(conf.tun.enable,false);assert.equal(conf.dns.enable,false);assert.equal(conf['allow-lan'],false);
+  assert.equal(conf['bind-address'],'127.0.0.1');assert.equal(conf['external-controller'],'127.0.0.1:30002');
+  assert.deepEqual(conf.authentication,['dsh:password']);assert.deepEqual(conf['skip-auth-prefixes'],[]);assert.deepEqual(conf.rules,['MATCH,DSH']);
+  for(const k of ['listeners','tunnels','script','external-ui','external-controller-pipe'])assert.equal(conf[k],undefined);
+});
+
+test('loopback/private literals bypass, public hosts do not',()=>{
+  for(const host of ['localhost','app.localhost','127.77.8.9','[::1]','0.0.0.0','[::ffff:127.0.0.1]','[::ffff:7f00:1]','10.1.2.3','192.168.1.5','172.31.1.5','[fc00::1]']) assert.equal(isLocalHost(host),true,host);
+  for(const host of ['api.example.com','8.8.8.8','172.32.1.5','[2606:4700:4700::1111]'])assert.equal(isLocalHost(host),false,host);
+});
+
+test('node validation rejects aliases, duplicate names and file credentials',()=>{
+  assert.throws(()=>parseNodes('proxies: &nodes [*nodes]'));
+  assert.throws(()=>parseNodes(fixture+fixture.split('proxies:\n')[1]));
+  assert.throws(()=>parseNodes(fixture+'    skip-cert-verify: "true"\n'));
+  assert.throws(()=>parseNodes(fixture+'    private-key: C:\\secret.key\n'));
+  assert.throws(()=>parseNodes(fixture+'    dialer-proxy: other\n'));
+  assert.throws(()=>parseNodes('c3M6Ly9leGFtcGxl'));
+});
+
+// A provider whose nodes use a private hostname resolvable only by its own DoH, and whose
+// nodes require skipping certificate verification. Both must survive import, or no node works.
+const providerYaml = `
+dns:
+  enable: true
+  enhanced-mode: fake-ip
+  fake-ip-filter: ['*']
+  use-hosts: true
+  nameserver: ['223.5.5.5', 'not a resolver']
+  proxy-server-nameserver:
+    - 'https://public-dns.example.com:843/dns-query/11111111-2222-3333-4444-555555555555'
+    - 'https://47.116.33.162:8443/dns-query/11111111-2222-3333-4444-555555555555#skip-cert-verify=true'
+  proxy-server-nameserver-policy:
+    'private.node': ['https://public-dns.example.com:843/dns-query/11111111-2222-3333-4444-555555555555']
+    '../evil': ['8.8.8.8']
+  nameserver-policy:
+    'bank.example': ['1.2.3.4']
+proxies:
+  - {name: a, type: anytls, server: private.node, port: 443, skip-cert-verify: true, sni: cdn.example.com}
+  - {name: b, type: http, server: 10.0.0.1, port: 8080, skip-cert-verify: false}
+tun:
+  enable: true
+listeners:
+  - port: 8888
+`;
+
+test('provider TLS and proxy-server DNS requirements survive import, unsafe parts do not',()=>{
+  const { nodes, dns, insecureTls } = parseSubscription(providerYaml);
+  assert.equal(nodes.length,2);
+  assert.equal(nodes[0]['skip-cert-verify'],true,'node TLS setting must be honoured, not rewritten');
+  assert.equal(nodes[1]['skip-cert-verify'],false);
+  assert.equal(nodes[0].sni,'cdn.example.com');
+  assert.equal(insecureTls,1);
+  // fake-ip, hosts files and generic DNS policy must not reach the core
+  assert.equal(dns['enhanced-mode'],'normal');assert.equal(dns['use-hosts'],false);assert.equal(dns['use-system-hosts'],false);assert.equal(dns.ipv6,false);
+  assert.equal(dns['fake-ip-filter'],undefined);assert.equal(dns['nameserver-policy'],undefined);
+  assert.deepEqual(dns.nameserver,['223.5.5.5']);
+  assert.equal(dns['proxy-server-nameserver'].length,2);
+  assert.deepEqual(Object.keys(dns['proxy-server-nameserver-policy']),['private.node']);
+  const conf = controlledConfig(nodes,{mixedPort:1,apiPort:2,apiSecret:'s',proxyPassword:'p',dns});
+  assert.equal(conf.dns.enable,true);assert.equal(conf.tun.enable,false);assert.equal(conf.listeners,undefined);
+  assert.equal(conf.script,undefined);assert.equal(conf['external-ui'],undefined);
+});
+
+test('sanitizeDns refuses a DNS block that cannot resolve proxy servers',()=>{
+  assert.equal(sanitizeDns(undefined),null);
+  assert.equal(sanitizeDns({enable:false}),null);
+  assert.equal(sanitizeDns({enable:true,'enhanced-mode':'fake-ip'}),null);
+  assert.equal(sanitizeDns({enable:true,'default-nameserver':['1.1.1.1']}),null);
+});
+
+test('controlled selection is persisted in group order',()=>{
+  const nodes=parseNodes(fixture);nodes.push({...nodes[0],name:'second'});
+  assert.deepEqual(controlledConfig(nodes,{mixedPort:1,apiPort:2,selected:'second'} )['proxy-groups'][0].proxies,['second','example']);
+});
+
+test('child environment strips hooks, overrides, path escape and proxy settings',()=>{
+  const env=coreEnvironment('owned',{SystemRoot:'C:\\Windows',CLASH_POST_UP:'evil.exe',CLASH_CONFIG_STRING:'evil',CLASH_OVERRIDE_SECRET:'evil',SAFE_PATHS:'C:\\',SKIP_SAFE_PATH_CHECK:'true',HTTP_PROXY:'evil',PATH:'evil',NODE_OPTIONS:'evil'});
+  assert.deepEqual(env,{HOME:'owned',USERPROFILE:'owned',SKIP_SAFE_PATH_CHECK:'false',SystemRoot:'C:\\Windows'});
+});
+
+test('subscription URL policies do not allow plaintext public credentials',()=>{
+  assert.equal(validateSubscriptionUrl('https://example.com/secret?token=x'),'https://example.com/secret?token=x');
+  assert.equal(validateSubscriptionUrl('http://127.0.0.1:123/config'),'http://127.0.0.1:123/config');
+  for(const url of ['http://example.com','https://user:pass@example.com','file:///secret','https://example.com/#secret'])assert.throws(()=>validateSubscriptionUrl(url));
+});
+
+test('log redaction removes endpoints and tokens before text leaves the Host',()=>{
+  const line = 'level=error msg="dial https://public-dns-muck.sailing.example:843/dns-query/11111111-2222-3333-4444-555555555555 failed"';
+  const out = redactLog(line);
+  assert.ok(!out.includes('sailing.example'));
+  assert.ok(!out.includes('11111111-2222-3333-4444-555555555555'));
+});
