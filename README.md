@@ -14,6 +14,14 @@
 6. “随插件加载自动启动”默认关闭，启用后下一次挂载插件会自动使用已保存内核与节点。停止不会重置该偏好。
 7. **时间地区**默认使用浏览器时区。界面以“中国大陆 · 北京时间”“日本 · 东京时间”“美国西部 · 洛杉矶时间”等通俗地区卡片显示，点击即生效；不常用地区仍可在“高级设置”里输入标准 IANA 名称（如 `Asia/Tokyo`、`America/New_York`）。从下一次模型步骤开始，同一 Host 所有会话里的未限定日期/时间按该地区解释。此功能独立于代理状态，不修改 Windows、浏览器或网页时钟，也不改变真实时间流逝和已保存提醒；点击“自动（跟随浏览器）”即可关闭覆盖。
 
+## 兼容的 DSH 运行时
+
+`peerDependencies` 声明 `@deepseek-ai/dsh-llm` 为 `^0.2.1-alpha.1`（即 `>=0.2.1-alpha.1 <0.3.0`），因此 **0.2.1-alpha.1、0.2.1-alpha.2 及后续 0.2.x** 都能加载。
+
+这里不能写成精确版本。DSH 启动时会用 `evaluatePluginCompatibility` 逐个校验插件 manifest 里 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` 的 peer 是否 `semver.satisfies(runtimeVersion, range, {includePrerelease:true})`；**不满足就整个 bundle 被静默跳过**——没有报错界面，只表现为插件功能整体消失。v1.3.1 曾把 peer 钉死为 `0.2.1-alpha.1`，升级到 alpha.2 后插件即不再加载（设置页没有该分节，`dsh_proxy` 工具也不存在）。v1.3.2 起改为区间，并用 `test/manifest.test.js` 锁定该回归：该测试要求 peer 区间接受 0.2.1 预发布线与 0.2.x 补丁、拒绝 0.3.0。
+
+若确实要跨到不兼容的大版本，可在插件管理器中对该 `插件名@版本` 授予精确版本豁免；但那只是跳过检查，API 兼容性仍需自行确认。
+
 ## 精确范围
 
 - **代理：** 同一 DSH Host 主进程中使用 Node 全局 HTTP dispatcher 的 `global fetch`，包括采用它的模型/API 和 HTTP SDK 请求。影响该 Host 的所有会话，不是仅当前会话。
