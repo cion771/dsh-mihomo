@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { MihomoController } from './controller.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { timeZoneHook } from './timezone.js';
+import { matchesSchema } from './validation.js';
 
 export const inject = ['connection', 'tools'];
 export const parameters = {
@@ -38,7 +39,7 @@ async function inputOf(request) {
 function validate(args) {
   if (!args || typeof args !== 'object' || Array.isArray(args) || !parameters.properties.action.enum.includes(args.action)) throw new Error('Unknown action.');
   for (const [key,value] of Object.entries(args)) {
-    if (!parameters.properties[key] || typeof value !== parameters.properties[key].type) throw new Error('Invalid action parameters.');
+    if (!parameters.properties[key] || !matchesSchema(value, parameters.properties[key])) throw new Error('Invalid action parameters.');
   }
   const allowed = {status:[],install:[],import:['url','yaml'],refresh:[],usage:[],start:[],stop:[],select:['node'],test:[],latency:[],configure:['autoStart','timeZone','autoRefreshHours']}[args.action];
   if (Object.keys(args).some(key=>key!=='action'&&!allowed.includes(key))) throw new Error('Parameters do not match the action.');
