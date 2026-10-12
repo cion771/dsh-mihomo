@@ -367,6 +367,27 @@ test('a running proxy refreshes onto new nodes, and a refused subscription leave
   }finally{await controller.dispose();assert.equal(getGlobalDispatcher(),old);await fs.rm(dir,{recursive:true,force:true});}
 });
 
+test('a provider certificate problem is named as itself, never flattened into a network error',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-mihomo-tls-'));
+  const failing=code=>async()=>{const error=new Error('fetch failed');error.cause={code};throw error;};
+  const cases=[
+    ['CERT_HAS_EXPIRED',/certificate has expired/],
+    ['DEPTH_ZERO_SELF_SIGNED_CERT',/trusted Node CA/],
+    ['CERT_UNTRUSTED',/trusted Node CA/],
+    ['ECONNREFUSED',/Check bootstrap network connectivity/],
+  ];
+  try{
+    for(const [code,expected] of cases){
+      const controller=await new MihomoController(dir,{fetch:failing(code)}).init();
+      try{
+        await assert.rejects(controller.run({action:'import',url:'https://example.com/subscription'}),expected,code);
+        assert.equal(controller.status().nodeCount,0,`${code} must import nothing`);
+        assert.equal(controller.status().subscriptionConfigured,false,`${code} must not save a subscription`);
+      }finally{await controller.dispose();}
+    }
+  }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
+
 test('failed downloads do not install an unverified executable',async()=>{
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-mihomo-download-'));
   const controller=await new MihomoController(dir,{fetch:async()=>Response.json({tag_name:CORE_VERSION,assets:[]})}).init();

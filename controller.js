@@ -371,7 +371,12 @@ export class MihomoController {
       try {
         response = await this.fetch(current, {dispatcher:this.baseline, signal:combined,redirect:'manual',headers:{'User-Agent':'DSH-Mihomo/1.0 (Clash Meta)','Accept':official?'application/vnd.github+json':'application/yaml,text/yaml,text/plain,*/*'}});
       } catch (error) {
-        if (['UNABLE_TO_GET_ISSUER_CERT_LOCALLY','SELF_SIGNED_CERT_IN_CHAIN','DEPTH_ZERO_SELF_SIGNED_CERT'].includes(error.cause?.code)) throw new Error('Download TLS validation failed. Configure a trusted Node CA (NODE_EXTRA_CA_CERTS) and restart DSH; certificate verification will not be disabled.');
+        const code = error.cause?.code ?? error.code;
+        // An expired or untrusted provider certificate is a different problem from a plain network
+        // failure, and the operator's fix differs entirely, so the reason must not be flattened.
+        // Certificate verification itself is never disabled, whatever the code says.
+        if (code === 'CERT_HAS_EXPIRED') throw new Error('Download TLS validation failed: the subscription server certificate has expired. Ask the provider to renew it; certificate verification will not be disabled.');
+        if (['UNABLE_TO_GET_ISSUER_CERT_LOCALLY','SELF_SIGNED_CERT_IN_CHAIN','DEPTH_ZERO_SELF_SIGNED_CERT','UNABLE_TO_VERIFY_LEAF_SIGNATURE','CERT_UNTRUSTED','ERR_TLS_CERT_ALTNAME_INVALID'].includes(code)) throw new Error('Download TLS validation failed. Configure a trusted Node CA (NODE_EXTRA_CA_CERTS) and restart DSH; certificate verification will not be disabled.');
         throw new Error('Download failed. Check bootstrap network connectivity.');
       }
       if ([301,302,303,307,308].includes(response.status)) {
