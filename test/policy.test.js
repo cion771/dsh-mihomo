@@ -1,7 +1,43 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseNodes, parseSubscription, controlledConfig, sanitizeDns, isLocalHost, coreEnvironment, validateSubscriptionUrl, redactLog } from '../policy.js';
+import { parseNodes, parseSubscription, controlledConfig, sanitizeDns, isLocalHost, coreEnvironment, validateSubscriptionUrl, redactLog, parseUserInfo, parseSubscriptionMeta } from '../policy.js';
 const fixture = 'proxies:\n  - name: example\n    type: socks5\n    server: example.com\n    port: 443\n';
+
+test('provider usage lines are read in the shapes providers actually send',()=>{
+  assert.deepEqual(parseUserInfo('upload=0; download=122190068697; total=0; expire=0'),{upload:0,download:122190068697,total:0,expire:0});
+  // Some panels omit the spaces after the separator; that must not discard the whole line.
+  assert.deepEqual(parseUserInfo('upload=1;download=2;total=3;expire=1793000000'),{upload:1,download:2,total:3,expire:1793000000});
+  assert.deepEqual(parseUserInfo('upload=1; download=2'),{upload:1,download:2,total:0,expire:0});
+  // Unknown keys, junk fields and non-numeric values are dropped instead of poisoning the numbers.
+  assert.deepEqual(parseUserInfo('upload=1; reset_day=5; download=abc; total=-4; expire=1793000000'),{upload:1,download:0,total:0,expire:1793000000});
+  // A millisecond expiry is unambiguous by magnitude, and an absurd one is noise, not a date.
+  assert.equal(parseUserInfo('expire=1793000000000').expire,1793000000);
+  assert.equal(parseUserInfo('expire=99999999999').expire,0);
+  assert.equal(parseUserInfo('upload=1; expire=' + '9'.repeat(30)).expire,0);
+  assert.equal(parseUserInfo('nothing useful'),null);
+  assert.equal(parseUserInfo(undefined),null);
+  assert.equal(parseUserInfo('x'.repeat(5000)),null);
+});
+
+test('subscription meta merges headers and body, with the body winning',()=>{
+  const header = new Headers({'subscription-userinfo':'upload=1; download=2; total=3; expire=4'});
+  assert.deepEqual(parseSubscriptionMeta('proxies: []',header),{userInfo:{upload:1,download:2,total:3,expire:4},updateIntervalHours:null});
+
+  const body = 'profile-update-interval: 6\n#subscription-userinfo: upload=10; download=20; total=30; expire=1793000000\nproxies: []\n';
+  assert.deepEqual(parseSubscriptionMeta(body),{userInfo:{upload:10,download:20,total:30,expire:1793000000},updateIntervalHours:6});
+
+  // The provider's own line beats the header, and the header still supplies what the body omits.
+  const merged = parseSubscriptionMeta('#subscription-userinfo: upload=10; download=20; total=30; expire=1793000000\n',new Headers({'subscription-userinfo':'upload=99; download=99; total=99; expire=99','profile-update-interval':'3'}));
+  assert.deepEqual(merged,{userInfo:{upload:10,download:20,total:30,expire:1793000000},updateIntervalHours:3});
+
+  // 0 is "the provider did not state it", which is why it survives as 0 instead of becoming null.
+  assert.deepEqual(parseSubscriptionMeta('',new Headers({'subscription-userinfo':'upload=0; download=122190068697; total=0; expire=0'})),
+    {userInfo:{upload:0,download:122190068697,total:0,expire:0},updateIntervalHours:null});
+
+  // An out-of-range or malformed interval is ignored rather than clamped into a wrong schedule.
+  for (const raw of ['0','-3','999','half','']) assert.equal(parseSubscriptionMeta('',new Headers({'profile-update-interval':raw})).updateIntervalHours,null,raw);
+  assert.deepEqual(parseSubscriptionMeta('proxies: []'),{userInfo:null,updateIntervalHours:null});
+});
 
 test('imports nodes, ignoring dangerous top-level subscription settings',()=>{
   const nodes = parseNodes(fixture+'tun:\n  enable: true\nexternal-controller: 0.0.0.0:9090\nlisteners:\n  - port: 8888\nscript: evil\n');

@@ -8,7 +8,7 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { Agent, Pool, ProxyAgent, fetch as httpFetch, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 import { unzipSync } from 'fflate';
 import { normalizeTimeZone } from './timezone.js';
-import { GROUP, CORE_VERSION, MAX_CONFIG_BYTES, isLocalHost, parseSubscription, parseNodes, sanitizeDns, validateSubscriptionUrl, controlledConfig, encodeConfig, coreEnvironment, redactLog } from './policy.js';
+import { GROUP, CORE_VERSION, MAX_CONFIG_BYTES, isLocalHost, parseSubscription, parseSubscriptionMeta, parseNodes, sanitizeDns, validateSubscriptionUrl, controlledConfig, encodeConfig, coreEnvironment, redactLog } from './policy.js';
 
 const MAX_ARCHIVE = 48 * 1024 * 1024;
 const MAX_EXE = 100 * 1024 * 1024;
@@ -66,6 +66,29 @@ async function readBounded(response, limit) {
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
+/**
+ * Automatic refresh runs on a coarse tick that only compares timestamps. A fixed short interval
+ * costs nothing, lets a changed interval take effect at once, and makes a laptop that was asleep
+ * refresh on the next tick instead of waiting out a long timer.
+ */
+const REFRESH_TICK_MS = 5 * 60 * 1000;
+
+/** Restore a persisted usage snapshot; every field must look like something a provider could send. */
+function normalizeUserInfo(value) {
+  if (!value || typeof value !== 'object') return null;
+  const count = key => (Number.isSafeInteger(value[key]) && value[key] >= 0 ? value[key] : 0);
+  return { upload: count('upload'), download: count('download'), total: count('total'), expire: count('expire') };
+}
+
+function normalizeTimestamp(value) {
+  return typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? new Date(value).toISOString() : null;
+}
+
+/** 0 disables automatic refresh; anything else is a whole number of hours within a month. */
+export function normalizeRefreshHours(value) {
+  return Number.isInteger(value) && value >= 0 && value <= 720 ? value : 0;
+}
+
 export async function reservePorts() {
   const servers = [];
   try {
@@ -95,11 +118,12 @@ export class MihomoController {
     this.spawn = options.spawn ?? spawn;
     this.ports = options.reservePorts ?? reservePorts;
     this.probeImpl = options.probe;
-    this.state = { timeZone: null, autoStart: false, subscriptionUrl: '', nodes: [], dns: null, insecureTls: 0, selected: '', updatedAt: null };
+    this.state = { timeZone: null, autoStart: false, subscriptionUrl: '', nodes: [], dns: null, insecureTls: 0, selected: '', updatedAt: null, userInfo: null, userInfoAt: null, autoRefreshHours: 0, lastRefreshAt: null, lastRefreshErrorAt: null, lastRefreshError: null };
     this.kernel = null;
     this.phase = 'stopped'; this.error = null;
     this.child = null; this.session = null; this.dispatcher = null; this.logStream = null;
     this.queue = Promise.resolve(); this.disposed = false;
+    this.refreshTimer = null; this.refreshing = false;
   }
   file(name) { return path.join(this.dataDir,name); }
 
@@ -120,6 +144,12 @@ export class MihomoController {
         insecureTls: nodes.filter(n => n['skip-cert-verify'] === true).length,
         selected: typeof stored.selected === 'string' ? stored.selected : '',
         updatedAt: typeof stored.updatedAt === 'string' ? stored.updatedAt : null,
+        userInfo: normalizeUserInfo(stored.userInfo),
+        userInfoAt: normalizeTimestamp(stored.userInfoAt),
+        autoRefreshHours: normalizeRefreshHours(stored.autoRefreshHours),
+        lastRefreshAt: normalizeTimestamp(stored.lastRefreshAt),
+        lastRefreshErrorAt: normalizeTimestamp(stored.lastRefreshErrorAt),
+        lastRefreshError: typeof stored.lastRefreshError === 'string' ? stored.lastRefreshError.slice(0, 300) : null,
       };
     } catch (err) { if (err.code !== 'ENOENT') throw new Error('Saved configuration cannot be read safely.'); }
     try {
@@ -136,6 +166,78 @@ export class MihomoController {
     await this.run({action:'start'}).catch(() => { if (this.phase !== 'running') this.phase = 'error'; });
   }
 
+  startAutoRefresh() {
+    if (this.refreshTimer) return;
+    this.refreshTimer = setInterval(() => { this.autoRefreshTick().catch(() => {}); }, REFRESH_TICK_MS);
+    this.refreshTimer.unref?.();
+  }
+
+  /**
+   * One background refresh attempt. Failures are recorded for the UI instead of thrown: an
+   * unattended timer that rejects would either be swallowed silently or surface as a crash.
+   */
+  async autoRefreshTick(now = Date.now()) {
+    if (this.disposed || this.refreshing || !this.refreshDue(now)) return false;
+    this.refreshing = true;
+    try {
+      await this.run({action:'refresh'});
+      return true;
+    } catch (error) {
+      this.error = null;
+      // The failure still counts as an attempt, so the next try waits a whole interval.
+      await this.save({ ...this.state, lastRefreshError: String(error.message).slice(0,300), lastRefreshErrorAt: new Date().toISOString() }).catch(() => {});
+      return false;
+    } finally { this.refreshing = false; }
+  }
+
+  /**
+   * Derived quota view. A `total` or `expire` of 0 means the provider did not state it, which is
+   * not the same as a quota of zero, so both surface as null rather than a misleading number.
+   */
+  usageView(now = Date.now()) {
+    const info = this.state.userInfo;
+    if (!info) return null;
+    const used = info.upload + info.download;
+    const total = info.total > 0 ? info.total : null;
+    const expire = info.expire > 0 ? info.expire : null;
+    return {
+      upload: info.upload, download: info.download, used, total,
+      remaining: total === null ? null : Math.max(0, total - used),
+      percentUsed: total === null ? null : Math.min(100, Math.round((used / total) * 1000) / 10),
+      expire,
+      expiresAt: expire === null ? null : new Date(expire * 1000).toISOString(),
+      daysLeft: expire === null ? null : Math.ceil((expire * 1000 - now) / 86400000),
+      expired: expire !== null && expire * 1000 <= now,
+      readAt: this.state.userInfoAt,
+    };
+  }
+
+  /** The most recent refresh attempt, successful or not, as a timestamp; null when never attempted. */
+  lastRefreshBasis() {
+    const stamps = [this.state.lastRefreshAt, this.state.lastRefreshErrorAt]
+      .map(value => (value ? Date.parse(value) : NaN))
+      .filter(value => !Number.isNaN(value));
+    return stamps.length ? Math.max(...stamps) : null;
+  }
+
+  /** When the next automatic refresh falls due; null when automatic refresh is off or unconfigured. */
+  nextRefreshAt(now = Date.now()) {
+    const hours = this.state.autoRefreshHours;
+    if (!hours || !this.state.subscriptionUrl) return null;
+    return new Date(Math.max(now, (this.lastRefreshBasis() ?? now) + hours * 3600000)).toISOString();
+  }
+
+  /**
+   * Whether a refresh is due. A failed attempt counts as an attempt, so a subscription that stays
+   * broken is retried once per interval instead of on every tick.
+   */
+  refreshDue(now = Date.now()) {
+    const hours = this.state.autoRefreshHours;
+    if (!hours || !this.state.subscriptionUrl) return false;
+    const basis = this.lastRefreshBasis();
+    return basis === null || now - basis >= hours * 3600000;
+  }
+
   status() {
     return {
       phase: this.phase,
@@ -146,6 +248,11 @@ export class MihomoController {
       timeZoneScope: 'Model date/time interpretation in all Host sessions; not browser/system clocks or saved reminders.',
       autoStart: this.state.autoStart,
       subscriptionConfigured: !!this.state.subscriptionUrl,
+      usage: this.usageView(),
+      autoRefreshHours: this.state.autoRefreshHours,
+      lastRefreshAt: this.state.lastRefreshAt,
+      nextRefreshAt: this.nextRefreshAt(),
+      lastRefreshError: this.state.lastRefreshError,
       nodeCount: this.state.nodes.length, nodes: this.state.nodes.map(n => ({name:n.name,type:n.type})),
       selected: this.state.selected || this.state.nodes[0]?.name || '',
       updatedAt: this.state.updatedAt, error: this.error,
@@ -178,7 +285,7 @@ export class MihomoController {
         // Raw network/process errors can contain URLs, credentials, config fragments, or ANSI output.
         const message = /^(Subscription |Configuration |Provide |Invalid |Node |Every |Unsupported |File paths|Unknown Shadowsocks|TLS |YAML |Managed |Saved |Kernel |Core |Install |Select |No |Cannot |Plugin |Action |Response |Official |Download |Unexpected |Proxy |Connectivity |Use a subscription|Stop |Start |Auto-start|The selected node|The node answered)/.test(error.message) ? error.message : 'Operation failed. Check connectivity or the imported configuration.';
         this.error = message;
-        if (['install','import','refresh'].includes(args.action) && !this.child) this.phase = 'stopped';
+        if (['install','import','refresh'].includes(args.action)) this.phase = this.child ? 'running' : 'stopped';
         throw new Error(message);
       }
     };
@@ -195,17 +302,22 @@ export class MihomoController {
         if (!this.state.subscriptionUrl) throw new Error('No subscription URL is saved.');
         return this.importConfig({url:this.state.subscriptionUrl},signal);
       }
+      case 'usage': return this.usage(signal);
       case 'start': return this.start(signal);
       case 'stop': await this.stop(); break;
       case 'select': await this.select(args.node,signal); break;
       case 'configure': {
-        if (args.autoStart === undefined && args.timeZone === undefined) throw new Error('Configuration requires autoStart or timeZone.');
+        if (args.autoStart === undefined && args.timeZone === undefined && args.autoRefreshHours === undefined) throw new Error('Configuration requires autoStart, timeZone, or autoRefreshHours.');
         const next = {...this.state};
         if (args.autoStart !== undefined) {
           if (typeof args.autoStart !== 'boolean') throw new Error('Auto-start must be true or false.');
           next.autoStart = args.autoStart;
         }
         if (args.timeZone !== undefined) next.timeZone = normalizeTimeZone(args.timeZone);
+        if (args.autoRefreshHours !== undefined) {
+          if (!Number.isInteger(args.autoRefreshHours) || args.autoRefreshHours < 0 || args.autoRefreshHours > 720) throw new Error('Invalid auto-refresh interval; use 0 to disable it or 1–720 hours.');
+          next.autoRefreshHours = args.autoRefreshHours;
+        }
         await this.save(next); break;
       }
       case 'test': return this.test(signal);
@@ -269,7 +381,8 @@ export class MihomoController {
         continue;
       }
       if (!response.ok) { await response.body?.cancel(); throw new Error(`Download returned HTTP ${response.status}.`); }
-      try { return await readBounded(response,limit); } catch (err) { if (err.message.startsWith('Response ')) throw err; throw new Error('Download body could not be read.'); }
+      try { const bytes = await readBounded(response,limit); return { bytes, headers: response.headers }; }
+      catch (err) { if (err.message.startsWith('Response ')) throw err; throw new Error('Download body could not be read.'); }
     }
     throw new Error('Download redirect limit exceeded.');
   }
@@ -278,7 +391,7 @@ export class MihomoController {
     if (this.child || this.dispatcher) throw new Error('Stop the proxy before installing the core.');
     if (process.platform !== 'win32' || !['x64','arm64'].includes(process.arch)) throw new Error('Core auto-install currently supports Windows x64 and ARM64 only.');
     this.phase = 'installing';
-    const metadata = await this.download(`https://api.github.com/repos/MetaCubeX/mihomo/releases/tags/${CORE_VERSION}`,{limit:1024*1024,signal,official:true});
+    const metadata = (await this.download(`https://api.github.com/repos/MetaCubeX/mihomo/releases/tags/${CORE_VERSION}`,{limit:1024*1024,signal,official:true})).bytes;
     let release; try { release = JSON.parse(metadata); } catch { throw new Error('Official release metadata is invalid.'); }
     if (release.tag_name !== CORE_VERSION || release.draft || release.prerelease) throw new Error('Official stable release metadata did not match the pinned version.');
     const arch = process.arch === 'x64' ? 'amd64-v1' : 'arm64';
@@ -287,7 +400,7 @@ export class MihomoController {
     if (!asset || !/^sha256:[a-f0-9]{64}$/.test(asset.digest) || !Number.isInteger(asset.size) || asset.size > MAX_ARCHIVE) throw new Error('Official asset or SHA256 digest is missing.');
     const expectedUrl = `https://github.com/MetaCubeX/mihomo/releases/download/${CORE_VERSION}/${assetName}`;
     if (asset.browser_download_url !== expectedUrl) throw new Error('Official asset URL did not match the release.');
-    const archive = await this.download(expectedUrl,{limit:MAX_ARCHIVE,signal,official:true});
+    const archive = (await this.download(expectedUrl,{limit:MAX_ARCHIVE,signal,official:true})).bytes;
     if (archive.length !== asset.size || sha256(archive) !== asset.digest.slice(7)) throw new Error('Official archive SHA256 verification failed.');
     let expanded = 0;
     let files;
@@ -334,26 +447,97 @@ export class MihomoController {
     finally { clearTimeout(timer); signal?.removeEventListener('abort',kill); }
   }
 
+  /**
+   * Replace the node set from a subscription URL or pasted YAML.
+   *
+   * A saved subscription may refresh while the proxy runs: the candidate config is validated with
+   * the core's own `-t` first and swapped in only after it passes, then applied through the core's
+   * reload endpoint. A subscription that turns out to be broken therefore leaves the running proxy
+   * on its previous nodes. Pasted YAML still requires a stop, because there is no saved source to
+   * fall back to.
+   */
   async importConfig(args,signal) {
-    if (this.child || this.dispatcher) throw new Error('Stop the proxy before importing or refreshing nodes.');
     const hasUrl = typeof args.url === 'string' && args.url.trim();
     const hasYaml = typeof args.yaml === 'string' && args.yaml.trim();
     if (!!hasUrl === !!hasYaml) throw new Error('Provide either a subscription URL or YAML, not both.');
+    const active = this.child !== null || this.dispatcher !== null;
+    if (hasYaml && active) throw new Error('Stop the proxy before importing pasted YAML; only a saved subscription can refresh while it runs.');
     this.phase = 'importing';
     const url = hasUrl ? validateSubscriptionUrl(args.url) : '';
-    const text = url ? (await this.download(url,{limit:MAX_CONFIG_BYTES,signal,subscription:true})).toString('utf8') : args.yaml;
+    let text = args.yaml;
+    let meta = null;
+    if (url) {
+      const { bytes, headers } = await this.download(url,{limit:MAX_CONFIG_BYTES,signal,subscription:true});
+      text = bytes.toString('utf8');
+      meta = parseSubscriptionMeta(text, headers);
+    }
     const parsed = parseSubscription(text);
     const previousSelection = this.state.selected;
-    await this.save({
+    const updatedAt = new Date().toISOString();
+    const next = {
       ...this.state,
       nodes: parsed.nodes,
       dns: parsed.dns,
       insecureTls: parsed.insecureTls,
       subscriptionUrl: url,
       selected: parsed.nodes.some(n => n.name === previousSelection) ? previousSelection : parsed.nodes[0].name,
-      updatedAt: new Date().toISOString(),
-    });
-    this.phase = 'stopped';
+      updatedAt,
+    };
+    if (url) {
+      next.lastRefreshAt = updatedAt;
+      next.lastRefreshError = null;
+      next.lastRefreshErrorAt = null;
+      if (meta?.userInfo) { next.userInfo = meta.userInfo; next.userInfoAt = updatedAt; }
+    }
+    if (active) await this.reloadRunning(next,signal);
+    else { await this.save(next); this.phase = 'stopped'; }
+    return this.status();
+  }
+
+  /**
+   * Move the running core onto a new node set without dropping the proxy. The previous file is kept
+   * in memory and put back if the core refuses the reload, so a failed refresh is never fatal.
+   */
+  async reloadRunning(next,signal) {
+    const target = this.file('managed.yaml');
+    const staging = this.file(`staging-${token()}.yaml`);
+    const config = encodeConfig(controlledConfig(next.nodes,{...this.session,selected:next.selected,dns:next.dns}));
+    let previous = null;
+    try {
+      await atomicWrite(staging,config);
+      await this.execCore(this.file('mihomo.exe'),['-t','-d',this.dataDir,'-f',staging],signal);
+      previous = await fs.readFile(target).catch(() => null);
+      await fs.rename(staging,target);
+      await this.api('/configs?force=true',{method:'PUT',body:JSON.stringify({path:target})},signal,20000);
+      const { proxies } = await this.api('/proxies',{},signal);
+      if (!Array.isArray(proxies?.[GROUP]?.all) || proxies[GROUP].all.length !== next.nodes.length) throw new Error('node group mismatch');
+      await this.api(`/proxies/${encodeURIComponent(GROUP)}`,{method:'PUT',body:JSON.stringify({name:next.selected})},signal);
+    } catch {
+      await fs.rm(staging,{force:true}).catch(() => {});
+      if (previous) {
+        // Restore the file the core is still serving, then re-apply it in case it already reloaded.
+        await atomicWrite(target,previous).catch(() => {});
+        await this.api('/configs?force=true',{method:'PUT',body:JSON.stringify({path:target})},undefined,20000).catch(() => {});
+      }
+      if (!this.child) throw new Error('Core exited while reloading the subscription; start the proxy again.');
+      throw new Error('Core rejected the refreshed subscription; the running proxy keeps its previous nodes.');
+    }
+    await this.save(next);
+    this.session.selected = next.selected;
+    this.phase = 'running';
+  }
+
+  /**
+   * Read the provider's quota without touching the imported nodes. Subscriptions report usage in a
+   * `subscription-userinfo` header or body comment; a provider that omits it can never show a
+   * remaining balance, which is a fact about the provider rather than a failure of this plugin.
+   */
+  async usage(signal) {
+    if (!this.state.subscriptionUrl) throw new Error('No subscription URL is saved.');
+    const { bytes, headers } = await this.download(this.state.subscriptionUrl,{limit:MAX_CONFIG_BYTES,signal,subscription:true});
+    const meta = parseSubscriptionMeta(bytes.toString('utf8'),headers);
+    if (!meta.userInfo) throw new Error('Subscription usage is not reported by this provider (no subscription-userinfo).');
+    await this.save({ ...this.state, userInfo: meta.userInfo, userInfoAt: new Date().toISOString() });
     return this.status();
   }
 
@@ -536,6 +720,7 @@ export class MihomoController {
 
   async dispose() {
     this.disposed = true;
+    if (this.refreshTimer) { clearInterval(this.refreshTimer); this.refreshTimer = null; }
     await this.queue;
     await this.stop();
     await this.direct.destroy();

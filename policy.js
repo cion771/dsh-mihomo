@@ -115,6 +115,63 @@ export function parseSubscription(text) {
 
 export function parseNodes(text) { return parseSubscription(text).nodes; }
 
+/**
+ * Clash/Mihomo meta-info. A provider may publish `subscription-userinfo` (usage and expiry) and
+ * `profile-update-interval` either as HTTP headers or as `#key: value` lines in the body, and the
+ * body wins. Byte counts are bytes; `expire` is a Unix timestamp. A `total` or `expire` of 0 means
+ * "not stated", so the status must keep 0 distinguishable from a real quota.
+ */
+const META_NAMES = new Set(['subscription-userinfo', 'profile-update-interval']);
+const USERINFO_KEYS = new Set(['upload', 'download', 'total', 'expire']);
+// 2100-01-01. Any larger expiry is noise; anything above 1e11 cannot be seconds and is treated as ms.
+const EXPIRY_CEILING = 4102444800;
+const EXPIRY_MILLISECONDS = 1e11;
+
+/** Read one non-negative safe integer, or null when the field is absent or malformed. */
+function readCount(raw) {
+  if (!/^[0-9]{1,20}$/.test(raw)) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+/** Parse one `upload=..; download=..; total=..; expire=..` line; separators may omit spaces. */
+export function parseUserInfo(raw) {
+  if (typeof raw !== 'string' || raw.length > 4096) return null;
+  const fields = {};
+  for (const match of raw.matchAll(/([a-z][a-z0-9-]*)[ \t]*=[ \t]*([0-9]+)/gi)) {
+    const key = match[1].toLowerCase();
+    if (!USERINFO_KEYS.has(key)) continue;
+    const value = readCount(match[2]);
+    if (value !== null) fields[key] = value;
+  }
+  if (!Object.keys(fields).length) return null;
+  let expire = fields.expire ?? 0;
+  if (expire > EXPIRY_MILLISECONDS) expire = Math.floor(expire / 1000);
+  if (expire > EXPIRY_CEILING) expire = 0;
+  return { upload: fields.upload ?? 0, download: fields.download ?? 0, total: fields.total ?? 0, expire };
+}
+
+/** Merge provider meta from response headers and body comment lines; the body takes precedence. */
+export function parseSubscriptionMeta(text, headers) {
+  const raw = {};
+  const read = typeof headers?.get === 'function' ? name => headers.get(name) : name => headers?.[name];
+  for (const name of META_NAMES) { const value = read(name); if (typeof value === 'string' && value.trim()) raw[name] = value.trim(); }
+  if (typeof text === 'string' && (text.includes('subscription-userinfo') || text.includes('profile-update-interval'))) {
+    // The documented body form is `#key: value`, and the leading `#` is optional because neither
+    // name is a legal Clash key, so a bare line cannot be mistaken for configuration.
+    for (const match of text.matchAll(/^[ \t]*#?[ \t]*([a-z][a-z0-9-]*)[ \t]*:[ \t]*(.*)$/gim)) {
+      const name = match[1].toLowerCase();
+      if (META_NAMES.has(name) && match[2].trim()) raw[name] = match[2].trim();
+    }
+  }
+  const hours = Number(raw['profile-update-interval']);
+  return {
+    userInfo: parseUserInfo(raw['subscription-userinfo']),
+    // The provider's suggestion is advisory; the user's own interval always wins.
+    updateIntervalHours: Number.isInteger(hours) && hours >= 1 && hours <= 720 ? hours : null,
+  };
+}
+
 export function controlledConfig(nodes, { mixedPort, apiPort, apiSecret, proxyPassword, selected, dns }) {
   const names = nodes.map(n => n.name);
   if (selected && names.includes(selected)) names.splice(names.indexOf(selected),1), names.unshift(selected);

@@ -223,13 +223,148 @@ test('model time-zone preference validates, persists and can be disabled without
     assert.equal(saved.timeZone,'Asia/Tokyo');
     assert.equal(saved.autoStart,false);
     await assert.rejects(controller.run({action:'configure',timeZone:'+08:00'}),/Invalid IANA/);
-    await assert.rejects(controller.run({action:'configure'}),/requires autoStart or timeZone/);
+    await assert.rejects(controller.run({action:'configure'}),/requires autoStart, timeZone, or autoRefreshHours/);
     const reload=await new MihomoController(dir).init();
     try {
       assert.equal(reload.status().timeZone,'Asia/Tokyo');
       assert.equal((await reload.run({action:'configure',timeZone:''})).timeZone,null);
     } finally { await reload.dispose(); }
   } finally { await controller.dispose();await fs.rm(dir,{recursive:true,force:true}); }
+});
+
+test('subscription usage is read, derived, and kept as "not stated" instead of zero',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-mihomo-usage-'));
+  const body='proxies:\n  - {name: example, type: http, server: 127.0.0.1, port: 12345}\n';
+  let header='upload=1000000000; download=4000000000; total=10000000000; expire=1793000000';
+  const fetch=async()=>new Response(body,{headers:header?{'subscription-userinfo':header}:{}});
+  const controller=await new MihomoController(dir,{fetch}).init();
+  try{
+    await assert.rejects(controller.run({action:'usage'}),/No subscription URL is saved/);
+    await controller.run({action:'import',url:'https://example.com/subscription'});
+    const status=await controller.run({action:'usage'});
+    assert.equal(status.usage.upload,1000000000);assert.equal(status.usage.download,4000000000);
+    assert.equal(status.usage.used,5000000000);assert.equal(status.usage.total,10000000000);
+    assert.equal(status.usage.remaining,5000000000);assert.equal(status.usage.percentUsed,50);
+    assert.equal(status.usage.expiresAt,new Date(1793000000*1000).toISOString());
+    assert.equal(status.usage.expired,false);assert.ok(status.usage.daysLeft>0);
+    assert.equal(status.nodeCount,1,'reading usage must not disturb the imported nodes');
+
+    // A provider that states no quota at all must not look like an exhausted one.
+    header='upload=1; download=2; total=0; expire=0';
+    const unlimited=await controller.run({action:'usage'});
+    assert.equal(unlimited.usage.used,3);assert.equal(unlimited.usage.total,null);
+    assert.equal(unlimited.usage.remaining,null);assert.equal(unlimited.usage.percentUsed,null);
+    assert.equal(unlimited.usage.expiresAt,null);assert.equal(unlimited.usage.expired,false);
+
+    // The last reading survives a restart, and an expired plan stays recognisable.
+    header='upload=1; download=2; total=3; expire=1';
+    await controller.run({action:'usage'});
+    assert.equal(controller.status().usage.expired,true);
+    const reload=await new MihomoController(dir).init();
+    try{assert.equal(reload.status().usage.expired,true);assert.equal(reload.status().usage.total,3);}
+    finally{await reload.dispose();}
+
+    // A provider that publishes nothing gets a plain answer instead of a fabricated zero.
+    header='';
+    await assert.rejects(controller.run({action:'usage'}),/not reported by this provider/);
+  }finally{await controller.dispose();await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('automatic refresh is opt-in, bounded, and only fires when a refresh is due',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-mihomo-auto-'));
+  const body='proxies:\n  - {name: example, type: http, server: 127.0.0.1, port: 12345}\n';
+  let downloads=0;
+  const fetch=async()=>{downloads++;return new Response(body,{headers:{'subscription-userinfo':'upload=1; download=2; total=3; expire=0'}});};
+  const controller=await new MihomoController(dir,{fetch}).init();
+  try{
+    assert.equal(controller.status().autoRefreshHours,0,'automatic refresh must be off by default');
+    assert.equal((await controller.run({action:'configure',autoRefreshHours:24})).autoRefreshHours,24);
+    // An interval with no saved subscription can never fall due.
+    assert.equal(controller.status().nextRefreshAt,null);
+    assert.equal(controller.refreshDue(Date.now()+365*24*3600000),false);
+    for(const bad of [-1,1.5,721,'24',null]) await assert.rejects(controller.run({action:'configure',autoRefreshHours:bad}),/Invalid auto-refresh interval/);
+
+    await controller.run({action:'import',url:'https://example.com/subscription'});
+    const imported=controller.status();
+    assert.ok(imported.lastRefreshAt,'a successful import counts as the first refresh');
+    assert.equal(controller.refreshDue(Date.now()),false,'a fresh import is not immediately due');
+    const next=Date.parse(imported.nextRefreshAt);
+    assert.ok(next>Date.now()+23*3600000&&next<Date.now()+25*3600000,`unexpected next refresh: ${imported.nextRefreshAt}`);
+
+    downloads=0;
+    assert.equal(await controller.autoRefreshTick(Date.now()),false,'not due means no download at all');
+    assert.equal(downloads,0);
+    assert.equal(await controller.autoRefreshTick(Date.now()+25*3600000),true);
+    assert.equal(downloads,1);
+    assert.equal(controller.status().lastRefreshError,null);
+    // The interval restarts from the wall clock of the refresh that just succeeded.
+    assert.equal(await controller.autoRefreshTick(Date.now()+3600000),false,'the interval restarts after every refresh');
+
+    // A failing provider is recorded for the UI; a timer that rejected would be silently swallowed.
+    const broken=await new MihomoController(dir,{fetch:async()=>{throw new Error('connect ECONNREFUSED 127.0.0.1:9');}}).init();
+    try{
+      assert.equal(await broken.autoRefreshTick(Date.now()+100*3600000),false);
+      assert.match(broken.status().lastRefreshError,/Download failed/,'the failure is recorded, not swallowed');
+      assert.equal(broken.status().phase,'stopped');
+      assert.equal(broken.status().nodeCount,1,'a failed refresh keeps the saved nodes');
+      // A recorded failure still counts as an attempt, so a broken provider is retried once per
+      // interval instead of on every five-minute tick.
+      assert.equal(await broken.autoRefreshTick(Date.now()+100*3600000+60000),false,'a failed refresh backs off for a whole interval');
+    }finally{await broken.dispose();}
+  }finally{await controller.dispose();await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('a running proxy refreshes onto new nodes, and a refused subscription leaves it untouched',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-mihomo-reload-'));
+  const bytes=Buffer.from('mock executable');
+  await fs.writeFile(path.join(dir,'mihomo.exe'),bytes);
+  await fs.writeFile(path.join(dir,'kernel.json'),JSON.stringify({version:CORE_VERSION,exeSha256:createHash('sha256').update(bytes).digest('hex')}));
+  const old=getGlobalDispatcher();
+  const managed=()=>fs.readFile(path.join(dir,'managed.yaml'),'utf8');
+  // The fake API reports the node group that is really on disk, so a no-op reload cannot pass.
+  const groupNames=async()=>[...(await managed()).split('proxy-groups:')[0].matchAll(/- name: (\S+)/g)].map(m=>m[1]);
+  let failValidation=false,selected='example',reloaded=0;
+  const fakeSpawn=(exe,args,options)=>{
+    assert.equal(options.shell,false);
+    const child=new EventEmitter();child.exitCode=null;child.killed=false;child.signalCode=null;child.stdout=new PassThrough();
+    child.kill=()=>{child.killed=true;child.exitCode=0;queueMicrotask(()=>child.emit('exit',0));return true;};
+    if(args.includes('-t'))queueMicrotask(()=>{const code=failValidation?1:0;child.exitCode=code;child.emit('exit',code);});
+    return child;
+  };
+  const fakeFetch=async(url,init)=>{
+    if(String(url).includes('example.com'))return new Response('proxies:\n  - {name: fresh, type: http, server: 127.0.0.1, port: 12345}\n',{headers:{'subscription-userinfo':'upload=1; download=2; total=0; expire=0'}});
+    if(String(url).endsWith('/version'))return Response.json({version:CORE_VERSION});
+    if(init?.method==='PUT'){
+      const payload=JSON.parse(init.body);
+      if(String(url).includes('/configs')){if(payload.path!==path.join(dir,'managed.yaml'))throw new Error('reload must name the managed config');reloaded++;return new Response(null,{status:204});}
+      selected=payload.name;return new Response(null,{status:204});
+    }
+    return Response.json({proxies:{DSH:{all:await groupNames(),now:selected}}});
+  };
+  const controller=await new MihomoController(dir,{spawn:fakeSpawn,fetch:fakeFetch,reservePorts:async()=>[19801,19802],probe:async()=>({url:'http://probe',statusCode:204,fetchMs:1})}).init();
+  try{
+    await controller.run({action:'import',yaml:'proxies:\n  - {name: example, type: http, server: 127.0.0.1, port: 12345}'});
+    await controller.run({action:'start'});
+    assert.match(await managed(),/name: example/);
+
+    const refreshed=await controller.run({action:'import',url:'https://example.com/subscription'});
+    assert.equal(refreshed.nodeCount,1);assert.equal(refreshed.selected,'fresh');
+    assert.equal(refreshed.running,true);assert.equal(refreshed.phase,'running');
+    assert.match(await managed(),/name: fresh/);
+    assert.equal(selected,'fresh','the group must be re-pointed at the refreshed selection');
+    assert.equal(refreshed.usage.used,3);
+    assert.equal(reloaded,1);
+
+    // The core refusing the candidate must leave both the file and the saved nodes alone.
+    const keptFile=await managed();
+    failValidation=true;
+    await assert.rejects(controller.run({action:'import',url:'https://example.com/subscription'}),/rejected the refreshed subscription/);
+    assert.equal(await managed(),keptFile);
+    assert.equal(controller.status().nodeCount,1);
+    assert.equal(controller.status().phase,'running');
+    assert.equal(reloaded,1,'a refused candidate is never applied');
+    assert.notEqual(getGlobalDispatcher(),old,'the running proxy keeps its dispatcher');
+  }finally{await controller.dispose();assert.equal(getGlobalDispatcher(),old);await fs.rm(dir,{recursive:true,force:true});}
 });
 
 test('failed downloads do not install an unverified executable',async()=>{

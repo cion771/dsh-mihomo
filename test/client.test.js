@@ -17,9 +17,11 @@ const STATUS = {
   nodes: [{ name: 'HK香港 01', type: 'anytls' }, { name: 'JP日本 01', type: 'anytls' }, { name: 'US美国 01', type: 'anytls' }],
   selected: 'HK香港 01', updatedAt: '2026-10-11T13:48:11.612Z', error: null,
   tlsVerificationDisabled: 3, proxyServerDns: 'subscription',
+  usage: { upload: 1000000000, download: 4000000000, used: 5000000000, total: 10000000000, remaining: 5000000000, percentUsed: 50, expire: 1793000000, expiresAt: new Date(1793000000 * 1000).toISOString(), daysLeft: 12, expired: false, readAt: '2026-10-13T00:00:00.000Z' },
+  autoRefreshHours: 24, lastRefreshAt: '2026-10-13T00:00:00.000Z', nextRefreshAt: '2026-10-14T00:00:00.000Z', lastRefreshError: null,
 };
 
-async function mount() {
+async function mount(overrides = {}) {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://127.0.0.1:5336/', pretendToBeVisual: true });
   const saved = { window: globalThis.window, document: globalThis.document, IS_REACT_ACT_ENVIRONMENT: globalThis.IS_REACT_ACT_ENVIRONMENT };
   globalThis.window = dom.window;
@@ -27,12 +29,13 @@ async function mount() {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
   const requests = [];
-  let currentStatus = { ...STATUS };
+  let currentStatus = { ...STATUS, ...overrides };
   const fetchImpl = async (_url, init) => {
     const body = JSON.parse(init.body);
     requests.push(body);
     if (body.action === 'select') currentStatus = { ...currentStatus, selected: body.node };
     if (body.action === 'configure' && Object.hasOwn(body, 'timeZone')) currentStatus = { ...currentStatus, timeZone: body.timeZone || null };
+    if (body.action === 'configure' && Object.hasOwn(body, 'autoRefreshHours')) currentStatus = { ...currentStatus, autoRefreshHours: body.autoRefreshHours, nextRefreshAt: body.autoRefreshHours ? currentStatus.nextRefreshAt : null };
     const result = body.action === 'latency'
       ? { results: currentStatus.nodes.map((n, i) => ({ name: n.name, delayMs: 100 * (i + 1) })), testedAt: 'now', state: currentStatus }
       : currentStatus;
@@ -151,6 +154,85 @@ test('a human-readable region applies immediately and automatic mode can be rest
     await app.click(automatic);
     assert.ok(app.requests.some(r => r.action === 'configure' && r.timeZone === ''));
     assert.equal(automatic.getAttribute('aria-pressed'), 'true');
+  } finally { await app.close(); }
+});
+
+test('subscription usage is shown in readable units and the refresh interval applies on click', async () => {
+  const app = await mount();
+  try {
+    const { document } = app.dom.window;
+    const bar = document.querySelector('.dsh-mh-usage-bar');
+    assert.ok(bar, 'the usage bar renders when the provider reports a quota');
+    assert.equal(bar.getAttribute('aria-valuenow'), '50');
+    assert.ok(document.body.textContent.includes('4.7 GiB'), `expected a human-readable amount, saw ${document.body.textContent.slice(0, 200)}`);
+    assert.ok(document.body.textContent.includes('4.7 GiB / 9.3 GiB'), 'used and total are shown together');
+
+    const day = document.querySelector('[data-hours="24"]');
+    const six = document.querySelector('[data-hours="6"]');
+    const off = document.querySelector('[data-hours="0"]');
+    assert.ok(day && six && off, 'the interval choices render');
+    assert.equal(day.getAttribute('aria-pressed'), 'true', 'the saved interval is the active choice');
+    assert.equal(six.getAttribute('aria-pressed'), 'false');
+
+    await app.click(six);
+    assert.ok(app.requests.some(r => r.action === 'configure' && r.autoRefreshHours === 6), 'the choice reaches the Host');
+    assert.equal(six.getAttribute('aria-pressed'), 'true', 'the chosen interval becomes visibly active');
+    assert.equal(day.getAttribute('aria-pressed'), 'false');
+
+    await app.click(off);
+    assert.ok(app.requests.some(r => r.action === 'configure' && r.autoRefreshHours === 0), 'automatic refresh can be switched off');
+    assert.equal(off.getAttribute('aria-pressed'), 'true');
+  } finally { await app.close(); }
+});
+
+test('a provider that reports no usage is explained instead of showing an empty quota', async () => {
+  const app = await mount({ usage: null });
+  try {
+    const { document } = app.dom.window;
+    assert.equal(document.querySelector('.dsh-mh-usage-bar'), null, 'no bar is drawn without a reported quota');
+    assert.ok(document.body.textContent.includes('usageUnknown'), 'the panel says the provider publishes nothing');
+    // A failed background refresh is surfaced where it belongs rather than as a silent no-op.
+    assert.equal(document.querySelector('[role="alert"]'), null);
+  } finally { await app.close(); }
+});
+
+test('a provider that states no total quota is never drawn as a completed bar', async () => {
+  // `total=0` means "not stated", so it must not render as 0 used of 0, or as a full red bar.
+  const app = await mount({ usage: { upload: 10, download: 20, used: 30, total: null, remaining: null, percentUsed: null, expire: null, expiresAt: null, daysLeft: null, expired: false, readAt: '2026-10-13T00:00:00.000Z' } });
+  try {
+    const { document } = app.dom.window;
+    const bar = document.querySelector('.dsh-mh-usage-bar');
+    assert.ok(bar, 'the bar still renders because usage itself was reported');
+    assert.equal(bar.getAttribute('aria-valuenow'), null, 'an unknown percentage is not announced as a number');
+    assert.equal(document.querySelector('.dsh-mh-usage-high'), null, 'an unknown percentage is not painted as critical');
+    const text = document.body.textContent;
+    assert.ok(text.includes('usageUnlimited'), 'the missing quota is stated');
+    assert.ok(text.includes('usageNoExpire'), 'the missing expiry is stated');
+    assert.equal(text.includes('usageRemaining'), false, 'no remaining line is invented without a total');
+  } finally { await app.close(); }
+});
+
+test('a saved subscription can be refreshed while the proxy runs', async () => {
+  const app = await mount();
+  try {
+    const { document } = app.dom.window;
+    assert.equal(STATUS.running, true, 'the fixture is a running proxy');
+    const refresh = byText(document.querySelectorAll('.dsh-mh-actions button'), 'refresh');
+    assert.ok(refresh, 'the refresh control renders');
+    assert.equal(refresh.disabled, false, 'a running proxy no longer blocks a subscription refresh');
+
+    await app.click(refresh);
+    assert.ok(app.requests.some(r => r.action === 'refresh'), 'refreshing asks the Host');
+  } finally { await app.close(); }
+});
+
+test('a failed automatic refresh is reported as an alert', async () => {
+  const app = await mount({ lastRefreshError: 'Download failed. Check bootstrap network connectivity.' });
+  try {
+    const { document } = app.dom.window;
+    const alert = document.querySelector('[role="alert"]');
+    assert.ok(alert, 'the failure is announced');
+    assert.ok(alert.textContent.includes('Download failed'), 'the provider-visible reason is kept');
   } finally { await app.close(); }
 });
 

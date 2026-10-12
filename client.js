@@ -12,7 +12,7 @@ window.__ModuleLoader__.load({
         core:'内核', missing:'未安装', nodes:'节点', selected:'所选节点', empty:'先导入 Clash/Mihomo 格式订阅或配置', source:'订阅与配置',
         url:'订阅地址（HTTPS）', urlHint:'已有订阅已保存；留空表示不更改', urlPlaceholder:'https://…（选择 Clash / Mihomo 格式）',
         yaml:'或粘贴 Clash/Mihomo YAML', yamlPlaceholder:'proxies:\n  - name: …\n    type: …\n    server: …\n    port: …',
-        importHint:'导入/更新前需停止代理。为让服务商的节点可用，节点自带的 TLS 与 DNS 选项会被保留（风险见下方提示）。支持含内联 proxies 的 YAML；不支持 provider-only、Base64 或 URI 列表。地址及节点凭据存储于本地，不回显、不写入会话。',
+        importHint:'订阅可以在代理运行时直接更新：新配置先交给内核校验，校验不通过就保留原节点。粘贴 YAML 仍需先停止代理。为让服务商的节点可用，节点自带的 TLS 与 DNS 选项会被保留（风险见下方提示）。支持含内联 proxies 的 YAML；不支持 provider-only、Base64 或 URI 列表。地址及节点凭据存储于本地，不回显、不写入会话。',
         auto:'随插件加载自动启动', autoHint:'默认关闭；启用后使用已安装内核及已保存节点。停止代理不会更改此偏好。',
         switch:'应用节点', state:'状态', active:'主进程代理已接管', inactive:'未接管主进程网络',
         license:'内核下载自官方固定版本 v1.19.32，校验 GitHub SHA256；该版本为 GPLv3。', sourceLink:'Mihomo 源码与许可', reference:'参考 Clash Verge Rev',
@@ -25,6 +25,15 @@ window.__ModuleLoader__.load({
         zoneAuto:'自动（跟随浏览器）', zoneUTC:'国际标准时间', zoneChina:'中国大陆 · 北京时间', zoneHongKong:'中国香港', zoneTaiwan:'中国台湾', zoneJapan:'日本 · 东京时间', zoneKorea:'韩国 · 首尔时间', zoneSingapore:'新加坡', zoneIndia:'印度', zoneUK:'英国 · 伦敦时间', zoneEurope:'欧洲中部 · 巴黎时间', zoneUSEast:'美国东部 · 纽约时间', zoneUSCentral:'美国中部 · 芝加哥时间', zoneUSMountain:'美国山地 · 丹佛时间', zoneUSWest:'美国西部 · 洛杉矶时间', zoneSydney:'澳大利亚 · 悉尼时间', zoneNewZealand:'新西兰 · 奥克兰时间',
         latencyTest:'检测延迟', latencyTesting:'检测中…', latencyDone:'延迟检测完成', latencyWait:'正在逐个测试节点，请稍候…',
         latencyHint:'检测延迟需要先启动代理；结果为节点到测速地址的往返延迟。', unreachable:'不通',
+        usageTitle:'订阅用量', usageUsed:'已用', usageRemaining:'剩余', usageExpire:'到期', usageReadAt:'读取时间',
+        usageNoExpire:'服务商未提供到期时间', usageExpired:'已过期', usageDaysLeft:'剩 {n} 天', usagePercent:'已用 {n}%', usageUnlimited:'服务商未提供总额度',
+        usageUnknown:'服务商没有在订阅里提供流量信息（subscription-userinfo）。是否显示用量由服务商决定，本插件无法自行推算。',
+        usageNoSubscription:'先导入订阅地址，才能查询用量。', usageCheck:'查询剩余流量',
+        usageStale:'以上是上次读取的结果，点“查询剩余流量”可更新。',
+        autoRefreshTitle:'自动更新订阅', autoRefreshOff:'关闭', autoRefreshOffHint:'只在手动点击时更新',
+        autoRefreshEvery:'每 {n} 小时', autoRefreshHint:'到期自动重新下载订阅',
+        autoRefreshNext:'下次自动更新：{t}', autoRefreshFailed:'上次自动更新失败：',
+        autoRefreshNote:'代理运行中也一样自动更新：新配置先交给内核校验，校验不通过就保留原节点，不会把正在用的代理弄断。',
       },
       en: {
         title:'DSH-only Proxy',intro:'Mihomo core · Main process only · No system network changes',
@@ -34,7 +43,7 @@ window.__ModuleLoader__.load({
         core:'Core',missing:'Not installed',nodes:'Nodes',selected:'Selected node',empty:'Import a Clash/Mihomo subscription or configuration first',source:'Subscription & configuration',
         url:'Subscription URL (HTTPS)',urlHint:'A subscription is saved; leave blank to keep it',urlPlaceholder:'https://… (Clash / Mihomo format)',
         yaml:'Or paste Clash/Mihomo YAML',yamlPlaceholder:'proxies:\n  - name: …\n    type: …\n    server: …\n    port: …',
-        importHint:'Stop before importing or refreshing. The subscription\'s own TLS and DNS options are kept so its nodes stay usable (risks are shown below). Inline-proxies YAML is supported; provider-only, Base64 and URI lists are not. URLs and credentials stay in local storage, without echoing or session logging.',
+        importHint:'A saved subscription can refresh while the proxy runs: the new configuration is validated by the core first, and a failure keeps the previous nodes. Pasted YAML still needs the proxy stopped. The subscription\'s own TLS and DNS options are kept so its nodes stay usable (risks are shown below). Inline-proxies YAML is supported; provider-only, Base64 and URI lists are not. URLs and credentials stay in local storage, without echoing or session logging.',
         auto:'Auto-start when plugin loads',autoHint:'Off by default. Uses the installed core and saved nodes. Stop does not change this preference.',switch:'Apply node',state:'Status',active:'Main-process proxy is active',inactive:'Main-process proxy is not active',
         license:'Official pinned v1.19.32 core download, verified with GitHub SHA256; this release is GPLv3.',sourceLink:'Mihomo source & license',reference:'Clash Verge Rev reference',
         busy:'Working, please wait…',success:'Operation completed',latency:'Connectivity passed in',ms:'ms',error:'Operation failed',updated:'Last import',never:'Not imported yet',
@@ -46,6 +55,15 @@ window.__ModuleLoader__.load({
         zoneAuto:'Automatic (follow browser)', zoneUTC:'Coordinated Universal Time', zoneChina:'Mainland China · Beijing time', zoneHongKong:'Hong Kong', zoneTaiwan:'Taiwan', zoneJapan:'Japan · Tokyo time', zoneKorea:'South Korea · Seoul time', zoneSingapore:'Singapore', zoneIndia:'India', zoneUK:'United Kingdom · London time', zoneEurope:'Central Europe · Paris time', zoneUSEast:'US Eastern · New York time', zoneUSCentral:'US Central · Chicago time', zoneUSMountain:'US Mountain · Denver time', zoneUSWest:'US Pacific · Los Angeles time', zoneSydney:'Australia · Sydney time', zoneNewZealand:'New Zealand · Auckland time',
         latencyTest:'Measure latency', latencyTesting:'Measuring…', latencyDone:'Latency measured', latencyWait:'Testing every node, please wait…',
         latencyHint:'Latency measurement needs the proxy running; each value is the node round trip to the test target.', unreachable:'failed',
+        usageTitle:'Subscription usage', usageUsed:'Used', usageRemaining:'Remaining', usageExpire:'Expires', usageReadAt:'Read at',
+        usageNoExpire:'The provider did not state an expiry', usageExpired:'expired', usageDaysLeft:'{n} days left', usagePercent:'{n}% used', usageUnlimited:'the provider stated no total quota',
+        usageUnknown:'This provider does not publish traffic information in the subscription (subscription-userinfo). Whether usage appears at all is the provider’s choice; the plugin cannot derive it.',
+        usageNoSubscription:'Import a subscription URL before usage can be read.', usageCheck:'Read remaining traffic',
+        usageStale:'This is the last reading; use “Read remaining traffic” to update it.',
+        autoRefreshTitle:'Automatic subscription refresh', autoRefreshOff:'Off', autoRefreshOffHint:'Refresh manually only',
+        autoRefreshEvery:'Every {n} h', autoRefreshHint:'Re-download the subscription when due',
+        autoRefreshNext:'Next automatic refresh: {t}', autoRefreshFailed:'Last automatic refresh failed:',
+        autoRefreshNote:'This also works while the proxy runs: the new configuration is validated by the core first, and a failure keeps the previous nodes instead of breaking the proxy you are using.',
       },
     };
     const timeZones = [
@@ -169,6 +187,17 @@ window.__ModuleLoader__.load({
           };
           const button = (label,args,disabled,primary) => h('button',{type:'button',disabled:busy||disabled,onClick:()=>action(args),className:primary?'dsh-mh-primary':undefined},t(label));
           const isOn = state?.running || state?.proxyActive;
+          const usage = state?.usage ?? null;
+          const refreshHours = state?.autoRefreshHours ?? 0;
+          const refreshOptions = [0,6,12,24,72];
+          // Byte counts arrive as plain integers; a quota can legitimately be absent (0 = not stated).
+          const bytes = value => {
+            if (typeof value !== 'number' || !Number.isFinite(value)) return t('missing');
+            const units = ['B','KiB','MiB','GiB','TiB','PiB'];
+            let size = value, unit = 0;
+            while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
+            return `${unit === 0 || size >= 100 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`;
+          };
           const activeTimeZone = state?.timeZone || '';
           const activeTimeZoneEntry = timeZones.find(entry => entry.zone === activeTimeZone);
           const activeTimeZoneLabel = activeTimeZoneEntry ? t(activeTimeZoneEntry.label) : activeTimeZone;
@@ -178,7 +207,7 @@ window.__ModuleLoader__.load({
             // The node list is drawn by this plugin: a native option popup cannot be
             // themed reliably, and its highlight made the selected node unreadable.
             h('style',null,'.dsh-mh-picker{position:relative}.dsh-mh-trigger{width:100%;display:flex;align-items:center;gap:10px;text-align:left}.dsh-mh-trigger-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dsh-mh-caret{color:var(--dsw-alias-label-secondary)}.dsh-mh-list{margin:8px 0 0;padding:4px;list-style:none;max-height:280px;overflow:auto;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);border-radius:10px}.dsh-mh-list:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}.dsh-mh-option{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:7px;cursor:pointer;border-left:3px solid transparent}.dsh-mh-option-highlight{background:var(--dsw-alias-bg-layer-2)}.dsh-mh-option-active{border-left-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2);font-weight:600}.dsh-mh-option-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dsh-mh-option-meta{color:var(--dsw-alias-label-secondary);font-size:12px}.dsh-mh-lat{font-variant-numeric:tabular-nums;font-size:12px;color:var(--dsw-alias-label-secondary);min-width:56px;text-align:right}.dsh-mh-lat-good{color:var(--dsw-alias-state-success-primary)}.dsh-mh-lat-slow{color:var(--dsw-alias-state-warn-primary)}.dsh-mh-lat-bad{color:var(--dsw-alias-state-error-primary)}.dsh-mh button:disabled{opacity:.55}'),
-            h('style',null,'.dsh-mh-zone-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:8px;margin-top:14px}.dsh-mh .dsh-mh-zone{display:flex;flex-direction:column;align-items:flex-start;min-height:60px;text-align:left;padding:9px 11px}.dsh-mh-zone-name{font-weight:600}.dsh-mh-zone-id{color:var(--dsw-alias-label-secondary);font-size:11px;overflow-wrap:anywhere}.dsh-mh .dsh-mh-zone-active{border-color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 20%,var(--dsw-alias-bg-layer-2))}.dsh-mh-timezone-advanced{margin-top:14px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:10px}.dsh-mh-timezone-advanced summary{cursor:pointer;color:var(--dsw-alias-label-secondary)}'),
+            h('style',null,'.dsh-mh-zone-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:8px;margin-top:14px}.dsh-mh .dsh-mh-zone{display:flex;flex-direction:column;align-items:flex-start;min-height:60px;text-align:left;padding:9px 11px}.dsh-mh-zone-name{font-weight:600}.dsh-mh-zone-id{color:var(--dsw-alias-label-secondary);font-size:11px;overflow-wrap:anywhere}.dsh-mh .dsh-mh-zone-active{border-color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 20%,var(--dsw-alias-bg-layer-2))}.dsh-mh-timezone-advanced{margin-top:14px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:10px}.dsh-mh-timezone-advanced summary{cursor:pointer;color:var(--dsw-alias-label-secondary)}.dsh-mh-usage-bar{height:8px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden;margin:4px 0 12px}.dsh-mh-usage-fill{height:100%;border-radius:999px;background:var(--dsw-alias-brand-primary)}.dsh-mh-usage-high{background:var(--dsw-alias-state-error-primary)}.dsh-mh-usage-num{font-variant-numeric:tabular-nums}'),
             h('h2',null,t('title')),h('p',null,t('intro')),
             h('div',{className:'dsh-mh-notice'},t('scope')),
             h('div',{className:'dsh-mh-card'},
@@ -233,11 +262,38 @@ window.__ModuleLoader__.load({
                 testing&&h('div',{className:'dsh-mh-notice',role:'status'},t('latencyWait')))),
             h('div',{className:'dsh-mh-card'},h('h3',null,t('source')),
               h('label',{htmlFor:'dsh-mh-url'},t('url')),
-              h('input',{id:'dsh-mh-url',type:'password',autoComplete:'off',value:url,disabled:busy||isOn,placeholder:state?.subscriptionConfigured?t('urlHint'):t('urlPlaceholder'),onChange:e=>setUrl(e.target.value)}),
+              h('input',{id:'dsh-mh-url',type:'password',autoComplete:'off',value:url,disabled:busy,placeholder:state?.subscriptionConfigured?t('urlHint'):t('urlPlaceholder'),onChange:e=>setUrl(e.target.value)}),
               h('label',{htmlFor:'dsh-mh-yaml'},t('yaml')),
               h('textarea',{id:'dsh-mh-yaml',autoComplete:'off',spellCheck:false,value:yaml,disabled:busy||isOn,placeholder:t('yamlPlaceholder'),onChange:e=>setYaml(e.target.value)}),
               h('small',null,t('importHint')),
-              h('div',{className:'dsh-mh-actions'},button('import',{action:'import',...(url.trim()?{url:url.trim()}:{yaml})},isOn||(!url.trim()&&!yaml.trim())||(!!url.trim()&&!!yaml.trim()),true),button('refresh',{action:'refresh'},isOn||!state?.subscriptionConfigured))),
+              h('div',{className:'dsh-mh-actions'},button('import',{action:'import',...(url.trim()?{url:url.trim()}:{yaml})},(!url.trim()&&!yaml.trim())||(!!url.trim()&&!!yaml.trim())||(isOn&&!url.trim()),true),button('refresh',{action:'refresh'},!state?.subscriptionConfigured))),
+            // Quota and automatic refresh live together: both exist only because a subscription URL
+            // was saved, and a provider that publishes no `subscription-userinfo` must say so rather
+            // than show a zero that looks like an exhausted plan.
+            h('div',{className:'dsh-mh-card'},h('h3',null,t('usageTitle')),
+              !state?.subscriptionConfigured
+                ? h('p',null,t('usageNoSubscription'))
+                : !usage
+                  ? h('p',null,t('usageUnknown'))
+                  : h(React.Fragment,null,
+                      h('div',{className:'dsh-mh-usage-bar',role:'progressbar','aria-label':t('usageTitle'),'aria-valuemin':0,'aria-valuemax':100,...(typeof usage.percentUsed==='number'?{'aria-valuenow':usage.percentUsed}:{})},
+                        h('div',{className:'dsh-mh-usage-fill'+(usage.percentUsed>=90?' dsh-mh-usage-high':''),style:{width:`${usage.percentUsed??0}%`}})),
+                      h('p',null,h('strong',null,`${t('usageUsed')}: `),h('span',{className:'dsh-mh-usage-num'},bytes(usage.used)),usage.total===null?` · ${t('usageUnlimited')}`:` / ${bytes(usage.total)}${typeof usage.percentUsed==='number'?` · ${t('usagePercent').replace('{n}',String(usage.percentUsed))}`:''}`),
+                      usage.total!==null&&h('p',null,h('strong',null,`${t('usageRemaining')}: `),h('span',{className:'dsh-mh-usage-num'},bytes(usage.remaining))),
+                      h('p',null,h('strong',null,`${t('usageExpire')}: `),usage.expiresAt?`${new Date(usage.expiresAt).toLocaleDateString()} · ${usage.expired?t('usageExpired'):t('usageDaysLeft').replace('{n}',String(usage.daysLeft))}`:t('usageNoExpire')),
+                      h('p',null,h('strong',null,`${t('usageReadAt')}: `),usage.readAt?new Date(usage.readAt).toLocaleString():t('never')),
+                      h('small',null,t('usageStale'))),
+              h('div',{className:'dsh-mh-actions'},button('usageCheck',{action:'usage'},!state?.subscriptionConfigured)),
+              h('h3',{style:{marginTop:20}},t('autoRefreshTitle')),
+              h('div',{className:'dsh-mh-zone-grid',role:'group','aria-label':t('autoRefreshTitle')},refreshOptions.map(hours=>
+                h('button',{key:hours,type:'button','data-hours':hours,'aria-pressed':refreshHours===hours,disabled:busy||!state?.subscriptionConfigured,
+                  className:'dsh-mh-zone'+(refreshHours===hours?' dsh-mh-zone-active':''),
+                  onClick:()=>action({action:'configure',autoRefreshHours:hours})},
+                  h('span',{className:'dsh-mh-zone-name'},hours?t('autoRefreshEvery').replace('{n}',String(hours)):t('autoRefreshOff')),
+                  h('span',{className:'dsh-mh-zone-id'},hours?t('autoRefreshHint'):t('autoRefreshOffHint'))))),
+              refreshHours>0&&state?.nextRefreshAt&&h('small',null,t('autoRefreshNext').replace('{t}',new Date(state.nextRefreshAt).toLocaleString())),
+              state?.lastRefreshError&&h('div',{className:'dsh-mh-notice',role:'alert'},h('strong',null,t('autoRefreshFailed')),' ',state.lastRefreshError),
+              h('small',null,t('autoRefreshNote'))),
             busy&&h('div',{className:'dsh-mh-notice',role:'status'},t('busy')),
             notice&&h('div',{className:'dsh-mh-notice',role:'status'},notice),
             (error||state?.error)&&h('div',{className:'dsh-mh-notice',role:'alert'},error||state.error),
