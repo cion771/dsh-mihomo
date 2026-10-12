@@ -132,24 +132,25 @@ test('latency results render per node after measuring', async () => {
   } finally { await app.close(); }
 });
 
-test('a preset time zone can be saved and reset independently of proxy state', async () => {
+test('a human-readable region applies immediately and automatic mode can be restored', async () => {
   const app = await mount();
   try {
     const { document } = app.dom.window;
-    assert.ok(document.body.textContent.includes('timeZoneDefault'), 'the disabled preference is explicit');
-    const preset = byText(document.querySelectorAll('button'), 'Asia/Tokyo');
-    assert.ok(preset, 'a common-zone preset renders');
-    await app.click(preset);
-    assert.equal(document.querySelector('#dsh-mh-timezone').value, 'Asia/Tokyo');
-    const save = byText(document.querySelectorAll('button'), 'timeZoneSave');
-    assert.equal(save.disabled, false);
-    await app.click(save);
+    const automatic = document.querySelector('[data-zone=""]');
+    const japan = document.querySelector('[data-zone="Asia/Tokyo"]');
+    assert.ok(automatic, 'the automatic browser-zone choice renders');
+    assert.ok(japan, 'the Japan region choice renders');
+    assert.equal(automatic.getAttribute('aria-pressed'), 'true');
+    assert.ok(japan.textContent.includes('zoneJapan'), 'the human label is the primary text');
+
+    await app.click(japan);
     assert.ok(app.requests.some(r => r.action === 'configure' && r.timeZone === 'Asia/Tokyo'));
-    assert.ok(document.body.textContent.includes('Asia/Tokyo'), 'the applied zone remains visible');
-    const reset = byText(document.querySelectorAll('button'), 'timeZoneReset');
-    assert.equal(reset.disabled, false);
-    await app.click(reset);
+    assert.equal(japan.getAttribute('aria-pressed'), 'true', 'the selected region becomes visibly active');
+    assert.equal(document.querySelector('#dsh-mh-timezone').value, 'Asia/Tokyo', 'advanced input tracks the applied choice');
+
+    await app.click(automatic);
     assert.ok(app.requests.some(r => r.action === 'configure' && r.timeZone === ''));
+    assert.equal(automatic.getAttribute('aria-pressed'), 'true');
   } finally { await app.close(); }
 });
 

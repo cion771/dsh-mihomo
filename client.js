@@ -21,7 +21,8 @@ window.__ModuleLoader__.load({
         tlsWarn:'TLS 提示：{n} 个节点要求跳过证书校验（服务商订阅自带）。经这些节点转发时，到节点的 TLS 无法验证，链路上的第三方可观察元数据。',
         dnsWarn:'这些节点的域名是私有地址，只能由订阅自带的加密 DNS 解析，因此该 DNS 配置被保留，服务商可观察节点解析。TUN、监听端口、规则与脚本仍被丢弃。',
         dnsSystem:'节点域名使用系统 DNS 解析。',
-        timeZoneTitle:'伪装时区（模型时间上下文）', timeZoneLabel:'IANA 时区', timeZonePresets:'常用时区', timeZoneSave:'保存时区', timeZoneReset:'恢复浏览器时区', timeZoneDefault:'跟随原始浏览器时间上下文', timeZoneCurrent:'当前设置', timeZoneHint:'选择常用时区或输入 IANA 名称后保存。默认关闭；影响本 Host 所有会话的日期/时间理解，下一模型步骤生效。无需启动代理，不修改系统/网页时区、真实时间流逝或已保存的提醒。',
+        timeZoneTitle:'时间地区', timeZoneLabel:'自定义 IANA 时区', timeZoneAdvanced:'找不到所在地区？高级设置', timeZoneSave:'应用自定义时区', timeZoneDefault:'自动（跟随浏览器）', timeZoneCurrent:'当前地区', timeZoneHint:'让模型按所选地区理解“今天、明天、下午 3 点”等说法。点击地区立即生效；不需要启动代理，也不会修改电脑或网页时钟。',
+        zoneAuto:'自动（跟随浏览器）', zoneUTC:'国际标准时间', zoneChina:'中国大陆 · 北京时间', zoneHongKong:'中国香港', zoneTaiwan:'中国台湾', zoneJapan:'日本 · 东京时间', zoneKorea:'韩国 · 首尔时间', zoneSingapore:'新加坡', zoneIndia:'印度', zoneUK:'英国 · 伦敦时间', zoneEurope:'欧洲中部 · 巴黎时间', zoneUSEast:'美国东部 · 纽约时间', zoneUSCentral:'美国中部 · 芝加哥时间', zoneUSMountain:'美国山地 · 丹佛时间', zoneUSWest:'美国西部 · 洛杉矶时间', zoneSydney:'澳大利亚 · 悉尼时间', zoneNewZealand:'新西兰 · 奥克兰时间',
         latencyTest:'检测延迟', latencyTesting:'检测中…', latencyDone:'延迟检测完成', latencyWait:'正在逐个测试节点，请稍候…',
         latencyHint:'检测延迟需要先启动代理；结果为节点到测速地址的往返延迟。', unreachable:'不通',
       },
@@ -41,11 +42,31 @@ window.__ModuleLoader__.load({
         tlsWarn:'TLS notice: {n} node(s) require skipping certificate verification, as the provider supplies it. Traffic through them is not authenticated at the proxy hop, so a third party on that path can observe metadata.',
         dnsWarn:'These node hostnames are private names resolvable only by the subscription own encrypted DNS, so that DNS configuration is kept and the provider can observe node resolution. TUN, listeners, rules and scripts are still discarded.',
         dnsSystem:'Node hostnames are resolved with the system DNS.',
-        timeZoneTitle:'Time-zone override (model context)', timeZoneLabel:'IANA time zone', timeZonePresets:'Common time zones', timeZoneSave:'Save time zone', timeZoneReset:'Use browser time zone', timeZoneDefault:'Original browser time context', timeZoneCurrent:'Current setting', timeZoneHint:'Choose a common zone or enter an IANA name, then save. Off by default. Applies to date/time interpretation in all Host sessions from the next model step, even with the proxy stopped. Does not change system/web clocks, elapsed time or saved reminders.',
+        timeZoneTitle:'Time region', timeZoneLabel:'Custom IANA time zone', timeZoneAdvanced:'Can’t find your region? Advanced settings', timeZoneSave:'Apply custom time zone', timeZoneDefault:'Automatic (follow browser)', timeZoneCurrent:'Current region', timeZoneHint:'Makes the model understand “today”, “tomorrow”, and local times using the selected region. A click applies immediately. The proxy can stay stopped, and computer/web clocks are unchanged.',
+        zoneAuto:'Automatic (follow browser)', zoneUTC:'Coordinated Universal Time', zoneChina:'Mainland China · Beijing time', zoneHongKong:'Hong Kong', zoneTaiwan:'Taiwan', zoneJapan:'Japan · Tokyo time', zoneKorea:'South Korea · Seoul time', zoneSingapore:'Singapore', zoneIndia:'India', zoneUK:'United Kingdom · London time', zoneEurope:'Central Europe · Paris time', zoneUSEast:'US Eastern · New York time', zoneUSCentral:'US Central · Chicago time', zoneUSMountain:'US Mountain · Denver time', zoneUSWest:'US Pacific · Los Angeles time', zoneSydney:'Australia · Sydney time', zoneNewZealand:'New Zealand · Auckland time',
         latencyTest:'Measure latency', latencyTesting:'Measuring…', latencyDone:'Latency measured', latencyWait:'Testing every node, please wait…',
         latencyHint:'Latency measurement needs the proxy running; each value is the node round trip to the test target.', unreachable:'failed',
       },
     };
+    const timeZones = [
+      { zone:'', label:'zoneAuto' },
+      { zone:'Asia/Shanghai', label:'zoneChina' },
+      { zone:'Asia/Hong_Kong', label:'zoneHongKong' },
+      { zone:'Asia/Taipei', label:'zoneTaiwan' },
+      { zone:'Asia/Tokyo', label:'zoneJapan' },
+      { zone:'Asia/Seoul', label:'zoneKorea' },
+      { zone:'Asia/Singapore', label:'zoneSingapore' },
+      { zone:'Asia/Kolkata', label:'zoneIndia' },
+      { zone:'Europe/London', label:'zoneUK' },
+      { zone:'Europe/Paris', label:'zoneEurope' },
+      { zone:'America/New_York', label:'zoneUSEast' },
+      { zone:'America/Chicago', label:'zoneUSCentral' },
+      { zone:'America/Denver', label:'zoneUSMountain' },
+      { zone:'America/Los_Angeles', label:'zoneUSWest' },
+      { zone:'Australia/Sydney', label:'zoneSydney' },
+      { zone:'Pacific/Auckland', label:'zoneNewZealand' },
+      { zone:'UTC', label:'zoneUTC' },
+    ];
     const css = `.dsh-mh{max-width:800px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.6;padding:8px 0 28px}.dsh-mh *{box-sizing:border-box}.dsh-mh h2{font-size:20px;margin:0 0 4px}.dsh-mh h3{font-size:14px;margin:0 0 14px}.dsh-mh p{margin:6px 0;color:var(--dsw-alias-label-secondary)}.dsh-mh-card{margin-top:18px;padding:20px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-1)}.dsh-mh-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.dsh-mh button{font:inherit;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border-radius:8px;padding:7px 12px;cursor:pointer}.dsh-mh button:disabled{opacity:.45;cursor:not-allowed}.dsh-mh button:focus-visible,.dsh-mh input:focus-visible,.dsh-mh textarea:focus-visible,.dsh-mh select:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}.dsh-mh .dsh-mh-primary{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 24%,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-brand-primary);font-weight:600}.dsh-mh label{display:block;margin-top:14px;margin-bottom:5px}.dsh-mh input:not([type=checkbox]),.dsh-mh textarea,.dsh-mh select{width:100%;font:inherit;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:9px 11px}.dsh-mh textarea{resize:vertical;min-height:130px;font-family:ui-monospace,monospace}.dsh-mh small{display:block;color:var(--dsw-alias-label-secondary);margin-top:6px}.dsh-mh-stat{display:flex;gap:22px;flex-wrap:wrap;margin:14px 0}.dsh-mh-stat div{min-width:110px;max-width:100%;overflow-wrap:anywhere}.dsh-mh-stat b{display:block;font-weight:600;font-size:15px}.dsh-mh-stat span{color:var(--dsw-alias-label-secondary)}.dsh-mh-notice{padding:12px 14px;margin-top:14px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);overflow-wrap:anywhere}.dsh-mh-notice[role=alert]{color:var(--dsw-alias-state-error-primary)}.dsh-mh-check{display:flex!important;align-items:center;gap:9px;cursor:pointer}.dsh-mh-check input{accent-color:var(--dsw-alias-brand-primary)}.dsh-mh a{color:var(--dsw-alias-brand-primary)}.dsh-mh-good{color:var(--dsw-alias-state-success-primary)}.dsh-mh-warn{color:var(--dsw-alias-state-warn-primary)}`;
     return {
       inject:['slots','locale'],
@@ -148,12 +169,16 @@ window.__ModuleLoader__.load({
           };
           const button = (label,args,disabled,primary) => h('button',{type:'button',disabled:busy||disabled,onClick:()=>action(args),className:primary?'dsh-mh-primary':undefined},t(label));
           const isOn = state?.running || state?.proxyActive;
+          const activeTimeZone = state?.timeZone || '';
+          const activeTimeZoneEntry = timeZones.find(entry => entry.zone === activeTimeZone);
+          const activeTimeZoneLabel = activeTimeZoneEntry ? t(activeTimeZoneEntry.label) : activeTimeZone;
           const phaseKey = {stopped:'phaseStopped',running:'phaseRunning',starting:'phaseStarting',installing:'phaseInstalling',importing:'phaseImporting',error:'phaseError'}[state?.phase] || 'phaseStopped';
           return h('section',{className:'dsh-mh','aria-label':t('title')},
             h('style',null,css),
             // The node list is drawn by this plugin: a native option popup cannot be
             // themed reliably, and its highlight made the selected node unreadable.
             h('style',null,'.dsh-mh-picker{position:relative}.dsh-mh-trigger{width:100%;display:flex;align-items:center;gap:10px;text-align:left}.dsh-mh-trigger-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dsh-mh-caret{color:var(--dsw-alias-label-secondary)}.dsh-mh-list{margin:8px 0 0;padding:4px;list-style:none;max-height:280px;overflow:auto;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);border-radius:10px}.dsh-mh-list:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}.dsh-mh-option{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:7px;cursor:pointer;border-left:3px solid transparent}.dsh-mh-option-highlight{background:var(--dsw-alias-bg-layer-2)}.dsh-mh-option-active{border-left-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2);font-weight:600}.dsh-mh-option-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dsh-mh-option-meta{color:var(--dsw-alias-label-secondary);font-size:12px}.dsh-mh-lat{font-variant-numeric:tabular-nums;font-size:12px;color:var(--dsw-alias-label-secondary);min-width:56px;text-align:right}.dsh-mh-lat-good{color:var(--dsw-alias-state-success-primary)}.dsh-mh-lat-slow{color:var(--dsw-alias-state-warn-primary)}.dsh-mh-lat-bad{color:var(--dsw-alias-state-error-primary)}.dsh-mh button:disabled{opacity:.55}'),
+            h('style',null,'.dsh-mh-zone-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:8px;margin-top:14px}.dsh-mh .dsh-mh-zone{display:flex;flex-direction:column;align-items:flex-start;min-height:60px;text-align:left;padding:9px 11px}.dsh-mh-zone-name{font-weight:600}.dsh-mh-zone-id{color:var(--dsw-alias-label-secondary);font-size:11px;overflow-wrap:anywhere}.dsh-mh .dsh-mh-zone-active{border-color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 20%,var(--dsw-alias-bg-layer-2))}.dsh-mh-timezone-advanced{margin-top:14px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:10px}.dsh-mh-timezone-advanced summary{cursor:pointer;color:var(--dsw-alias-label-secondary)}'),
             h('h2',null,t('title')),h('p',null,t('intro')),
             h('div',{className:'dsh-mh-notice'},t('scope')),
             h('div',{className:'dsh-mh-card'},
@@ -172,16 +197,19 @@ window.__ModuleLoader__.load({
               state?.tlsVerificationDisabled>0&&h('div',{className:'dsh-mh-notice',style:{color:'var(--dsw-alias-state-warn-primary)'}},t('tlsWarn').replace('{n}',String(state.tlsVerificationDisabled)))),
             h('div',{className:'dsh-mh-card'},
               h('h3',null,t('timeZoneTitle')),
-              h('p',null,h('strong',null,`${t('timeZoneCurrent')}: `),state?.timeZone||t('timeZoneDefault')),
-              h('label',{htmlFor:'dsh-mh-timezone'},t('timeZoneLabel')),
-              h('input',{id:'dsh-mh-timezone',type:'text',autoComplete:'off',spellCheck:false,value:timeZone,disabled:busy,placeholder:'Asia/Tokyo',onChange:e=>setTimeZone(e.target.value)}),
+              h('p',null,h('strong',null,`${t('timeZoneCurrent')}: `),activeTimeZoneLabel),
               h('small',null,t('timeZoneHint')),
-              h('label',null,t('timeZonePresets')),
-              h('div',{className:'dsh-mh-actions'},['UTC','Asia/Shanghai','Asia/Tokyo','Asia/Singapore','Europe/London','America/New_York','America/Los_Angeles'].map(zone=>
-                h('button',{key:zone,type:'button',disabled:busy,onClick:()=>setTimeZone(zone),className:timeZone===zone?'dsh-mh-primary':undefined},zone))),
-              h('div',{className:'dsh-mh-actions'},
-                h('button',{type:'button',className:timeZone.trim()!==(state?.timeZone||'')?'dsh-mh-primary':undefined,disabled:busy||timeZone.trim()===(state?.timeZone||''),onClick:()=>action({action:'configure',timeZone:timeZone.trim()})},t('timeZoneSave')),
-                h('button',{type:'button',disabled:busy||!state?.timeZone,onClick:()=>action({action:'configure',timeZone:''})},t('timeZoneReset')))),
+              h('div',{className:'dsh-mh-zone-grid',role:'group','aria-label':t('timeZoneTitle')},timeZones.map(entry=>
+                h('button',{key:entry.zone||'auto',type:'button','data-zone':entry.zone,'aria-pressed':activeTimeZone===entry.zone,disabled:busy,
+                  className:'dsh-mh-zone'+(activeTimeZone===entry.zone?' dsh-mh-zone-active':''),onClick:()=>action({action:'configure',timeZone:entry.zone})},
+                  h('span',{className:'dsh-mh-zone-name'},t(entry.label)),
+                  h('span',{className:'dsh-mh-zone-id'},entry.zone||t('timeZoneDefault'))))),
+              h('details',{className:'dsh-mh-timezone-advanced'},
+                h('summary',null,t('timeZoneAdvanced')),
+                h('label',{htmlFor:'dsh-mh-timezone'},t('timeZoneLabel')),
+                h('input',{id:'dsh-mh-timezone',type:'text',autoComplete:'off',spellCheck:false,value:timeZone,disabled:busy,placeholder:'Asia/Tokyo',onChange:e=>setTimeZone(e.target.value)}),
+                h('div',{className:'dsh-mh-actions'},
+                  h('button',{type:'button',className:timeZone.trim()!==activeTimeZone?'dsh-mh-primary':undefined,disabled:busy||!timeZone.trim()||timeZone.trim()===activeTimeZone,onClick:()=>action({action:'configure',timeZone:timeZone.trim()})},t('timeZoneSave'))))),
             h('div',{className:'dsh-mh-card'},h('h3',null,t('selected')),
               !state?.nodeCount?h('p',null,t('empty')):h(React.Fragment,null,
                 h('div',{className:'dsh-mh-picker',ref:pickerRef},
