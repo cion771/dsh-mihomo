@@ -13,7 +13,7 @@ const act = React.act ?? (await import('react-dom/test-utils')).act;
 
 const STATUS = {
   phase: 'running', running: true, proxyActive: true, coreInstalled: true, coreVersion: 'v1.19.32',
-  autoStart: false, subscriptionConfigured: true, nodeCount: 3,
+  autoStart: false, timeZone: null, subscriptionConfigured: true, nodeCount: 3,
   nodes: [{ name: 'HK香港 01', type: 'anytls' }, { name: 'JP日本 01', type: 'anytls' }, { name: 'US美国 01', type: 'anytls' }],
   selected: 'HK香港 01', updatedAt: '2026-10-11T13:48:11.612Z', error: null,
   tlsVerificationDisabled: 3, proxyServerDns: 'subscription',
@@ -27,12 +27,15 @@ async function mount() {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
   const requests = [];
+  let currentStatus = { ...STATUS };
   const fetchImpl = async (_url, init) => {
     const body = JSON.parse(init.body);
     requests.push(body);
-    const result = body.action === 'select' ? { ...STATUS, selected: body.node }
-      : body.action === 'latency' ? { results: STATUS.nodes.map((n, i) => ({ name: n.name, delayMs: 100 * (i + 1) })), testedAt: 'now', state: STATUS }
-        : STATUS;
+    if (body.action === 'select') currentStatus = { ...currentStatus, selected: body.node };
+    if (body.action === 'configure' && Object.hasOwn(body, 'timeZone')) currentStatus = { ...currentStatus, timeZone: body.timeZone || null };
+    const result = body.action === 'latency'
+      ? { results: currentStatus.nodes.map((n, i) => ({ name: n.name, delayMs: 100 * (i + 1) })), testedAt: 'now', state: currentStatus }
+      : currentStatus;
     return { json: async () => ({ ok: true, result }) };
   };
   dom.window.fetch = fetchImpl;
@@ -126,6 +129,27 @@ test('latency results render per node after measuring', async () => {
     assert.ok(app.requests.some(r => r.action === 'latency'), 'measuring asks the Host');
     const badges = [...document.querySelectorAll('.dsh-mh-lat')].map(node => node.textContent);
     assert.ok(badges.some(text => text.includes('100 ms')), `expected a rendered latency value, saw ${JSON.stringify(badges)}`);
+  } finally { await app.close(); }
+});
+
+test('a preset time zone can be saved and reset independently of proxy state', async () => {
+  const app = await mount();
+  try {
+    const { document } = app.dom.window;
+    assert.ok(document.body.textContent.includes('timeZoneDefault'), 'the disabled preference is explicit');
+    const preset = byText(document.querySelectorAll('button'), 'Asia/Tokyo');
+    assert.ok(preset, 'a common-zone preset renders');
+    await app.click(preset);
+    assert.equal(document.querySelector('#dsh-mh-timezone').value, 'Asia/Tokyo');
+    const save = byText(document.querySelectorAll('button'), 'timeZoneSave');
+    assert.equal(save.disabled, false);
+    await app.click(save);
+    assert.ok(app.requests.some(r => r.action === 'configure' && r.timeZone === 'Asia/Tokyo'));
+    assert.ok(document.body.textContent.includes('Asia/Tokyo'), 'the applied zone remains visible');
+    const reset = byText(document.querySelectorAll('button'), 'timeZoneReset');
+    assert.equal(reset.disabled, false);
+    await app.click(reset);
+    assert.ok(app.requests.some(r => r.action === 'configure' && r.timeZone === ''));
   } finally { await app.close(); }
 });
 

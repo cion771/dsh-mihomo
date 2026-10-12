@@ -21,6 +21,7 @@ window.__ModuleLoader__.load({
         tlsWarn:'TLS 提示：{n} 个节点要求跳过证书校验（服务商订阅自带）。经这些节点转发时，到节点的 TLS 无法验证，链路上的第三方可观察元数据。',
         dnsWarn:'这些节点的域名是私有地址，只能由订阅自带的加密 DNS 解析，因此该 DNS 配置被保留，服务商可观察节点解析。TUN、监听端口、规则与脚本仍被丢弃。',
         dnsSystem:'节点域名使用系统 DNS 解析。',
+        timeZoneTitle:'伪装时区（模型时间上下文）', timeZoneLabel:'IANA 时区', timeZonePresets:'常用时区', timeZoneSave:'保存时区', timeZoneReset:'恢复浏览器时区', timeZoneDefault:'跟随原始浏览器时间上下文', timeZoneCurrent:'当前设置', timeZoneHint:'选择常用时区或输入 IANA 名称后保存。默认关闭；影响本 Host 所有会话的日期/时间理解，下一模型步骤生效。无需启动代理，不修改系统/网页时区、真实时间流逝或已保存的提醒。',
         latencyTest:'检测延迟', latencyTesting:'检测中…', latencyDone:'延迟检测完成', latencyWait:'正在逐个测试节点，请稍候…',
         latencyHint:'检测延迟需要先启动代理；结果为节点到测速地址的往返延迟。', unreachable:'不通',
       },
@@ -40,6 +41,7 @@ window.__ModuleLoader__.load({
         tlsWarn:'TLS notice: {n} node(s) require skipping certificate verification, as the provider supplies it. Traffic through them is not authenticated at the proxy hop, so a third party on that path can observe metadata.',
         dnsWarn:'These node hostnames are private names resolvable only by the subscription own encrypted DNS, so that DNS configuration is kept and the provider can observe node resolution. TUN, listeners, rules and scripts are still discarded.',
         dnsSystem:'Node hostnames are resolved with the system DNS.',
+        timeZoneTitle:'Time-zone override (model context)', timeZoneLabel:'IANA time zone', timeZonePresets:'Common time zones', timeZoneSave:'Save time zone', timeZoneReset:'Use browser time zone', timeZoneDefault:'Original browser time context', timeZoneCurrent:'Current setting', timeZoneHint:'Choose a common zone or enter an IANA name, then save. Off by default. Applies to date/time interpretation in all Host sessions from the next model step, even with the proxy stopped. Does not change system/web clocks, elapsed time or saved reminders.',
         latencyTest:'Measure latency', latencyTesting:'Measuring…', latencyDone:'Latency measured', latencyWait:'Testing every node, please wait…',
         latencyHint:'Latency measurement needs the proxy running; each value is the node round trip to the test target.', unreachable:'failed',
       },
@@ -57,6 +59,7 @@ window.__ModuleLoader__.load({
           const [url,setUrl] = React.useState('');
           const [yaml,setYaml] = React.useState('');
           const [selected,setSelected] = React.useState('');
+          const [timeZone,setTimeZone] = React.useState('');
           const [busy,setBusy] = React.useState(false);
           const [notice,setNotice] = React.useState('');
           const [error,setError] = React.useState('');
@@ -77,7 +80,7 @@ window.__ModuleLoader__.load({
               return body.result;
             } finally { controllers.current.delete(abort); }
           }
-          const receive = result => { const value = result.state || result; setState(value); setSelected(value.selected || ''); };
+          const receive = result => { const value = result.state || result; setState(value); setSelected(value.selected || ''); setTimeZone(value.timeZone || ''); };
           React.useEffect(() => {
             mounted.current = true;
             call({action:'status'}).then(value=>{if(mounted.current)receive(value);}).catch(err=>{if(mounted.current)setError(err.message);});
@@ -167,6 +170,18 @@ window.__ModuleLoader__.load({
               h('small',null,t('autoHint')),
               state&&h('div',{className:'dsh-mh-notice'},state.proxyServerDns==='subscription'?t('dnsWarn'):t('dnsSystem')),
               state?.tlsVerificationDisabled>0&&h('div',{className:'dsh-mh-notice',style:{color:'var(--dsw-alias-state-warn-primary)'}},t('tlsWarn').replace('{n}',String(state.tlsVerificationDisabled)))),
+            h('div',{className:'dsh-mh-card'},
+              h('h3',null,t('timeZoneTitle')),
+              h('p',null,h('strong',null,`${t('timeZoneCurrent')}: `),state?.timeZone||t('timeZoneDefault')),
+              h('label',{htmlFor:'dsh-mh-timezone'},t('timeZoneLabel')),
+              h('input',{id:'dsh-mh-timezone',type:'text',autoComplete:'off',spellCheck:false,value:timeZone,disabled:busy,placeholder:'Asia/Tokyo',onChange:e=>setTimeZone(e.target.value)}),
+              h('small',null,t('timeZoneHint')),
+              h('label',null,t('timeZonePresets')),
+              h('div',{className:'dsh-mh-actions'},['UTC','Asia/Shanghai','Asia/Tokyo','Asia/Singapore','Europe/London','America/New_York','America/Los_Angeles'].map(zone=>
+                h('button',{key:zone,type:'button',disabled:busy,onClick:()=>setTimeZone(zone),className:timeZone===zone?'dsh-mh-primary':undefined},zone))),
+              h('div',{className:'dsh-mh-actions'},
+                h('button',{type:'button',className:timeZone.trim()!==(state?.timeZone||'')?'dsh-mh-primary':undefined,disabled:busy||timeZone.trim()===(state?.timeZone||''),onClick:()=>action({action:'configure',timeZone:timeZone.trim()})},t('timeZoneSave')),
+                h('button',{type:'button',disabled:busy||!state?.timeZone,onClick:()=>action({action:'configure',timeZone:''})},t('timeZoneReset')))),
             h('div',{className:'dsh-mh-card'},h('h3',null,t('selected')),
               !state?.nodeCount?h('p',null,t('empty')):h(React.Fragment,null,
                 h('div',{className:'dsh-mh-picker',ref:pickerRef},

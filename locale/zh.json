@@ -1,1 +1,1 @@
-{"meta":{"title":"DSH 专用代理","description":"内置管理 Mihomo 内核和订阅，仅代理 DSH 主进程的 fetch 网络请求，不修改系统代理或启用 TUN。"}}
+{"meta":{"title":"DSH 专用代理","description":"管理 Mihomo 主进程代理，并可为模型时间上下文手动选择 IANA 时区；不修改系统代理、TUN 或系统时钟。"}}

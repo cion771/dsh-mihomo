@@ -7,6 +7,7 @@ import { once } from 'node:events';
 import { setTimeout as wait } from 'node:timers/promises';
 import { Agent, Pool, ProxyAgent, fetch as httpFetch, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 import { unzipSync } from 'fflate';
+import { normalizeTimeZone } from './timezone.js';
 import { GROUP, CORE_VERSION, MAX_CONFIG_BYTES, isLocalHost, parseSubscription, parseNodes, sanitizeDns, validateSubscriptionUrl, controlledConfig, encodeConfig, coreEnvironment, redactLog } from './policy.js';
 
 const MAX_ARCHIVE = 48 * 1024 * 1024;
@@ -94,7 +95,7 @@ export class MihomoController {
     this.spawn = options.spawn ?? spawn;
     this.ports = options.reservePorts ?? reservePorts;
     this.probeImpl = options.probe;
-    this.state = { autoStart: false, subscriptionUrl: '', nodes: [], dns: null, insecureTls: 0, selected: '', updatedAt: null };
+    this.state = { timeZone: null, autoStart: false, subscriptionUrl: '', nodes: [], dns: null, insecureTls: 0, selected: '', updatedAt: null };
     this.kernel = null;
     this.phase = 'stopped'; this.error = null;
     this.child = null; this.session = null; this.dispatcher = null; this.logStream = null;
@@ -111,6 +112,7 @@ export class MihomoController {
       const stored = JSON.parse(await fs.readFile(this.file('state.json'),'utf8'));
       const nodes = stored.nodes?.length ? parseNodes(encodeConfig({proxies:stored.nodes})) : [];
       this.state = {
+        timeZone: normalizeTimeZone(stored.timeZone ?? ''),
         autoStart: stored.autoStart === true,
         subscriptionUrl: stored.subscriptionUrl ? validateSubscriptionUrl(stored.subscriptionUrl) : '',
         nodes,
@@ -140,6 +142,8 @@ export class MihomoController {
       running: this.child !== null && this.child.exitCode === null && !this.child.killed,
       proxyActive: this.dispatcher !== null && getGlobalDispatcher() === this.dispatcher,
       coreInstalled: this.kernel !== null, coreVersion: this.kernel?.version ?? null,
+      timeZone: this.state.timeZone,
+      timeZoneScope: 'Model date/time interpretation in all Host sessions; not browser/system clocks or saved reminders.',
       autoStart: this.state.autoStart,
       subscriptionConfigured: !!this.state.subscriptionUrl,
       nodeCount: this.state.nodes.length, nodes: this.state.nodes.map(n => ({name:n.name,type:n.type})),
@@ -195,8 +199,14 @@ export class MihomoController {
       case 'stop': await this.stop(); break;
       case 'select': await this.select(args.node,signal); break;
       case 'configure': {
-        if (typeof args.autoStart !== 'boolean') throw new Error('Auto-start must be true or false.');
-        await this.save({...this.state,autoStart:args.autoStart}); break;
+        if (args.autoStart === undefined && args.timeZone === undefined) throw new Error('Configuration requires autoStart or timeZone.');
+        const next = {...this.state};
+        if (args.autoStart !== undefined) {
+          if (typeof args.autoStart !== 'boolean') throw new Error('Auto-start must be true or false.');
+          next.autoStart = args.autoStart;
+        }
+        if (args.timeZone !== undefined) next.timeZone = normalizeTimeZone(args.timeZone);
+        await this.save(next); break;
       }
       case 'test': return this.test(signal);
       case 'latency': return this.latency(signal);

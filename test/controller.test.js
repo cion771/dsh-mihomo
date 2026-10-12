@@ -215,6 +215,23 @@ test('installer verifies digest and archive paths before running a staged execut
   }
 });
 
+test('model time-zone preference validates, persists and can be disabled without a core',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-mihomo-timezone-'));
+  const controller=await new MihomoController(dir).init();
+  try {
+    const saved=await controller.run({action:'configure',timeZone:' Asia/Tokyo '});
+    assert.equal(saved.timeZone,'Asia/Tokyo');
+    assert.equal(saved.autoStart,false);
+    await assert.rejects(controller.run({action:'configure',timeZone:'+08:00'}),/Invalid IANA/);
+    await assert.rejects(controller.run({action:'configure'}),/requires autoStart or timeZone/);
+    const reload=await new MihomoController(dir).init();
+    try {
+      assert.equal(reload.status().timeZone,'Asia/Tokyo');
+      assert.equal((await reload.run({action:'configure',timeZone:''})).timeZone,null);
+    } finally { await reload.dispose(); }
+  } finally { await controller.dispose();await fs.rm(dir,{recursive:true,force:true}); }
+});
+
 test('failed downloads do not install an unverified executable',async()=>{
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-mihomo-download-'));
   const controller=await new MihomoController(dir,{fetch:async()=>Response.json({tag_name:CORE_VERSION,assets:[]})}).init();
