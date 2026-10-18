@@ -26,7 +26,7 @@
 
 ## 精确范围
 
-- **代理：** 同一 DSH Host 主进程中使用 Node 全局 HTTP dispatcher 的 `global fetch`，包括采用它的模型/API 和 HTTP SDK 请求。影响该 Host 的所有会话，不是仅当前会话。
+- **代理：** 同一 DSH Host 主进程中使用 Node 全局 HTTP dispatcher 的 `global fetch`，包括采用它的模型/API 和 HTTP SDK 请求。影响该 Host 的所有会话，不是仅当前会话。其中模型 API 与 `.cn`、`localhost`、私有网段由内核规则直连，不经隧道（原因见下节“订阅格式和安全配置”）。
 - **时区偏好：** 每个模型步骤末尾追加一条明确的 Host 时间上下文快照，使手动选择覆盖内置浏览器时区快照；关闭时追加重置语义，避免历史会话继续沿用旧偏好。只影响模型对未限定日期/时间的解释，用户明确写出的时区仍优先。
 - **自动更新：** 插件加载期间由一个 5 分钟粒度、`unref()` 过的定时器比较时间戳；只有到期才真正下载订阅，因此一次自动更新等于一次订阅下载请求。定时器失败只记录原因供界面显示，不会抛出到 Host，也不改变代理状态；间隔为默认的 0（关闭）时不发起任何请求。间隔与上次更新/失败时间戳保存在 Host，重启后继续生效。
 - **不会改：** Windows 注册表、WinINET/WinHTTP 系统代理、网卡、路由、防火墙、TUN、系统/浏览器时钟。不会设置 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 或改变子进程环境；不会重写已有提醒。
@@ -48,7 +48,9 @@
 - **DNS**：只保留解析节点地址所需的部分（`proxy-server-nameserver` 与 `proxy-server-nameserver-policy`），并把 `enhanced-mode` 固定为 `normal`。`fake-ip`、`use-hosts`、通用 `nameserver-policy` 与任何 DNS 监听仍然丢弃。
 - **TLS**：节点自带的 `skip-cert-verify` 会被保留。界面会显示有多少个节点关闭了证书校验。关闭后，到代理节点的这段 TLS 无法被验证；链路上的第三方可观察元数据（目标站点的 HTTPS 仍是端到端加密）。若你无法接受，请换用不要求该选项的服务商。
 
-生成全新受控 YAML：仅 `DSH` 选择组和 `MATCH,DSH` 规则，loopback bind，禁止 LAN；TUN、DNS 监听及其他代理端口均关闭。订阅的 TUN、规则、监听、controller、脚本和 external-ui 等配置不会被传给内核。
+生成全新受控 YAML：仅 `DSH` 选择组，loopback bind，禁止 LAN；TUN、DNS 监听及其他代理端口均关闭。订阅的 TUN、规则、监听、controller、脚本和 external-ui 等配置不会被传给内核。
+
+规则是固定的 `MATCH,DSH` 之前加一组直连例外：`deepseek.com`、`.cn`、`localhost` 和私有网段。模型 API 与服务商同区，塞进境外节点只会给每个请求多加一个往返（IEPL 实测 +250 ms），还可能被境外出口限流或判风险，所以它固定直连；其余流量仍然全部经代理。
 
 启动会先验证链路：先让内核自测所选节点，再用 DSH 自己的 global fetch 实测一次。任一步失败就**自动回滚**到启动前的 dispatcher 并报出真实原因，避免把 DSH 自身的模型请求困在坏代理里。
 

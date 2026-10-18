@@ -172,6 +172,20 @@ export function parseSubscriptionMeta(text, headers) {
   };
 }
 
+// Same-region and local traffic must never enter the tunnel. The model API is served from the
+// user's own region, so routing it through a foreign node costs a full extra round trip on every
+// request (measured +250 ms on an IEPL line) and lets an overseas exit be throttled or rejected
+// for no benefit. Loopback and private ranges are never remote either.
+export const DIRECT_RULES = [
+  'DOMAIN-SUFFIX,deepseek.com,DIRECT',
+  'DOMAIN-SUFFIX,cn,DIRECT',
+  'DOMAIN-SUFFIX,localhost,DIRECT',
+  'IP-CIDR,127.0.0.0/8,DIRECT,no-resolve',
+  'IP-CIDR,10.0.0.0/8,DIRECT,no-resolve',
+  'IP-CIDR,172.16.0.0/12,DIRECT,no-resolve',
+  'IP-CIDR,192.168.0.0/16,DIRECT,no-resolve',
+];
+
 export function controlledConfig(nodes, { mixedPort, apiPort, apiSecret, proxyPassword, selected, dns }) {
   const names = nodes.map(n => n.name);
   if (selected && names.includes(selected)) names.splice(names.indexOf(selected),1), names.unshift(selected);
@@ -186,7 +200,7 @@ export function controlledConfig(nodes, { mixedPort, apiPort, apiSecret, proxyPa
     'profile': { 'store-selected': false, 'store-fake-ip': false },
     proxies: nodes,
     'proxy-groups': [{ name: GROUP, type: 'select', proxies: names }],
-    rules: [`MATCH,${GROUP}`],
+    rules: [...DIRECT_RULES, `MATCH,${GROUP}`],
   };
 }
 

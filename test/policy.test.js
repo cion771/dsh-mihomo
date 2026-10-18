@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseNodes, parseSubscription, controlledConfig, sanitizeDns, isLocalHost, coreEnvironment, validateSubscriptionUrl, redactLog, parseUserInfo, parseSubscriptionMeta } from '../policy.js';
+import { parseNodes, parseSubscription, controlledConfig, DIRECT_RULES, sanitizeDns, isLocalHost, coreEnvironment, validateSubscriptionUrl, redactLog, parseUserInfo, parseSubscriptionMeta } from '../policy.js';
 const fixture = 'proxies:\n  - name: example\n    type: socks5\n    server: example.com\n    port: 443\n';
 
 test('provider usage lines are read in the shapes providers actually send',()=>{
@@ -44,8 +44,23 @@ test('imports nodes, ignoring dangerous top-level subscription settings',()=>{
   const conf = controlledConfig(nodes,{mixedPort:30001,apiPort:30002,apiSecret:'secret',proxyPassword:'password',selected:'example'});
   assert.equal(conf.tun.enable,false);assert.equal(conf.dns.enable,false);assert.equal(conf['allow-lan'],false);
   assert.equal(conf['bind-address'],'127.0.0.1');assert.equal(conf['external-controller'],'127.0.0.1:30002');
-  assert.deepEqual(conf.authentication,['dsh:password']);assert.deepEqual(conf['skip-auth-prefixes'],[]);assert.deepEqual(conf.rules,['MATCH,DSH']);
+  assert.deepEqual(conf.authentication,['dsh:password']);assert.deepEqual(conf['skip-auth-prefixes'],[]);
+  assert.deepEqual(conf.rules,[...DIRECT_RULES,'MATCH,DSH']);assert.equal(conf.rules.at(-1),'MATCH,DSH');
   for(const k of ['listeners','tunnels','script','external-ui','external-controller-pipe'])assert.equal(conf[k],undefined);
+});
+
+test('same-region and local traffic is routed around the tunnel',()=>{
+  const nodes = parseNodes(fixture);
+  const rules = controlledConfig(nodes,{mixedPort:30001,apiPort:30002,apiSecret:'secret',proxyPassword:'password'}).rules;
+  // The model API answers from the same region; tunnelling it adds a round trip and risks a
+  // foreign exit being throttled, so it must match a pre-MATCH rule.
+  assert.ok(rules.includes('DOMAIN-SUFFIX,deepseek.com,DIRECT'));
+  assert.ok(rules.includes('DOMAIN-SUFFIX,cn,DIRECT'));
+  // The catch-all stays last: anything not exempted still has to leave through the proxy.
+  assert.equal(rules.filter(r=>r.startsWith('MATCH,')).length,1);
+  assert.equal(rules.indexOf('MATCH,DSH'),rules.length-1);
+  // Every exemption sorts before the catch-all, so none of them can be dead weight.
+  for(const rule of DIRECT_RULES) assert.ok(rules.indexOf(rule)<rules.indexOf('MATCH,DSH'),rule);
 });
 
 test('loopback/private literals bypass, public hosts do not',()=>{
