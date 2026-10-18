@@ -223,7 +223,7 @@ test('model time-zone preference validates, persists and can be disabled without
     assert.equal(saved.timeZone,'Asia/Tokyo');
     assert.equal(saved.autoStart,false);
     await assert.rejects(controller.run({action:'configure',timeZone:'+08:00'}),/Invalid IANA/);
-    await assert.rejects(controller.run({action:'configure'}),/requires autoStart, timeZone, or autoRefreshHours/);
+    await assert.rejects(controller.run({action:'configure'}),/requires autoStart, timeZone, autoRefreshHours, or insecureSubscriptionTls/);
     const reload=await new MihomoController(dir).init();
     try {
       assert.equal(reload.status().timeZone,'Asia/Tokyo');
@@ -443,4 +443,36 @@ test('a state file written before this feature still reports the saved plan',asy
         'the plan is recovered from node names so it is visible without a fresh download');
     }finally{await controller.dispose();}
   }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('the subscription certificate is verified unless the operator turns that off',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-mihomo-tls-'));
+  const seen=[];
+  const body='proxies:\n  - {name: first, type: http, server: 127.0.0.1, port: 12345}';
+  const controller=await new MihomoController(dir,{fetch:async(url,options)=>{seen.push(options);return new Response(body,{status:200,headers:{'content-type':'text/yaml'}});}}).init();
+  try{
+    await controller.run({action:'import',url:'https://example.test/sub'});
+    assert.equal(seen.at(-1).dispatcher,controller.baseline,'a normal download keeps certificate verification');
+    assert.equal(controller.status().insecureSubscriptionTls,false,'verification is the default');
+
+    await controller.run({action:'configure',insecureSubscriptionTls:true});
+    await controller.run({action:'import',url:'https://example.test/sub'});
+    assert.equal(seen.at(-1).dispatcher,controller.relaxedDispatcher(),'the allowed download uses the relaxed dispatcher');
+    assert.notEqual(controller.relaxedDispatcher(),controller.baseline,'the relaxed dispatcher is a separate object');
+    assert.equal(controller.status().insecureSubscriptionTls,true);
+
+    await assert.rejects(controller.run({action:'configure',insecureSubscriptionTls:'yes'}),/on or off/);
+    assert.equal(controller.status().insecureSubscriptionTls,true,'a rejected value leaves the stored choice alone');
+  }finally{await controller.dispose();await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('the subscription TLS choice is remembered across a reload',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-mihomo-tls2-'));
+  const controller=await new MihomoController(dir,{fetch:async()=>new Response('{}')}).init();
+  let again;
+  try{
+    await controller.run({action:'configure',insecureSubscriptionTls:true});
+    again=await new MihomoController(dir,{fetch:async()=>new Response('{}')}).init();
+    assert.equal(again.status().insecureSubscriptionTls,true,'the operator does not have to repeat the choice');
+  }finally{await controller.dispose();if(again)await again.dispose();await fs.rm(dir,{recursive:true,force:true});}
 });

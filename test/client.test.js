@@ -19,6 +19,7 @@ const STATUS = {
   tlsVerificationDisabled: 3, proxyServerDns: 'subscription',
   usage: { upload: 1000000000, download: 4000000000, used: 5000000000, total: 10000000000, remaining: 5000000000, percentUsed: 50, expire: 1793000000, expiresAt: new Date(1793000000 * 1000).toISOString(), daysLeft: 12, expired: false, readAt: '2026-10-13T00:00:00.000Z' },
   autoRefreshHours: 24, lastRefreshAt: '2026-10-13T00:00:00.000Z', nextRefreshAt: '2026-10-14T00:00:00.000Z', lastRefreshError: null,
+  insecureSubscriptionTls: false,
 };
 
 async function mount(overrides = {}) {
@@ -37,6 +38,7 @@ async function mount(overrides = {}) {
     if (body.action === 'select') currentStatus = { ...currentStatus, selected: body.node };
     if (body.action === 'configure' && Object.hasOwn(body, 'timeZone')) currentStatus = { ...currentStatus, timeZone: body.timeZone || null };
     if (body.action === 'configure' && Object.hasOwn(body, 'autoRefreshHours')) currentStatus = { ...currentStatus, autoRefreshHours: body.autoRefreshHours, nextRefreshAt: body.autoRefreshHours ? currentStatus.nextRefreshAt : null };
+    if (body.action === 'configure' && Object.hasOwn(body, 'insecureSubscriptionTls')) currentStatus = { ...currentStatus, insecureSubscriptionTls: body.insecureSubscriptionTls };
     if (body.action === 'traffic') {
       trafficReads += 1;
       const result = { up: 2048, down: 4096 * trafficReads, active: 1, at: 'now', connections: [{ host: 'api.deepseek.com', chain: ['DIRECT'], rule: 'Match', download: 1024, upload: 512 }] };
@@ -279,6 +281,25 @@ test('a failed automatic refresh is reported as an alert', async () => {
     const alert = document.querySelector('[role="alert"]');
     assert.ok(alert, 'the failure is announced');
     assert.ok(alert.textContent.includes('Download failed'), 'the provider-visible reason is kept');
+  } finally { await app.close(); }
+});
+
+test('the subscription certificate switch is off by default and states what turning it on costs', async () => {
+  const app = await mount();
+  try {
+    const { document } = app.dom.window;
+    const row = [...document.querySelectorAll('.dsh-mh-check')].find(node => node.textContent.includes('insecureTitle'));
+    assert.ok(row, 'the switch sits with the subscription source it applies to');
+    const box = row.querySelector('input[type="checkbox"]');
+    assert.equal(box.checked, false, 'verification is on unless the operator says otherwise');
+    assert.ok(document.body.textContent.includes('insecureHint'), 'the consequence is explained before it is used');
+    assert.equal(document.querySelector('.dsh-mh-notice.dsh-mh-warn'), null, 'nothing warns while verification is on');
+
+    await app.click(box);
+    assert.ok(app.requests.some(r => r.action === 'configure' && r.insecureSubscriptionTls === true), 'the choice reaches the Host');
+    assert.equal(box.checked, true, 'the switch shows the saved choice');
+    const warn = document.querySelector('.dsh-mh-notice.dsh-mh-warn');
+    assert.ok(warn && warn.textContent.includes('insecureOn'), 'the panel keeps saying verification is off');
   } finally { await app.close(); }
 });
 

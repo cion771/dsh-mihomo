@@ -142,15 +142,30 @@ export class MihomoController {
     this.spawn = options.spawn ?? spawn;
     this.ports = options.reservePorts ?? reservePorts;
     this.probeImpl = options.probe;
-    this.state = { timeZone: null, autoStart: false, subscriptionUrl: '', nodes: [], raw: null, dns: null, insecureTls: 0, selected: '', updatedAt: null, userInfo: null, userInfoAt: null, importInfo: null, autoRefreshHours: 0, lastRefreshAt: null, lastRefreshErrorAt: null, lastRefreshError: null };
+    this.state = { timeZone: null, autoStart: false, subscriptionUrl: '', nodes: [], raw: null, dns: null, insecureTls: 0, insecureSubscriptionTls: false, selected: '', updatedAt: null, userInfo: null, userInfoAt: null, importInfo: null, autoRefreshHours: 0, lastRefreshAt: null, lastRefreshErrorAt: null, lastRefreshError: null };
     this.kernel = null;
     this.phase = 'stopped'; this.error = null;
     this.child = null; this.session = null; this.dispatcher = null; this.logStream = null;
     this.queue = Promise.resolve(); this.disposed = false;
     this.refreshTimer = null; this.refreshing = false;
+    this.relaxed = null;
     this.report = null;
   }
   file(name) { return path.join(this.dataDir,name); }
+
+  /**
+   * A direct dispatcher that accepts any certificate, created only when the
+   * operator asks for it. It exists for one host: a subscription endpoint whose
+   * own TLS is broken (an expired or self-signed provider certificate), where
+   * the alternative is that refresh, usage and config inheritance stop working
+   * until a third party fixes their server. It is never used for the core
+   * download, whose bytes are then checked against a pinned digest, and never
+   * installed globally, so model and tool traffic keep normal verification.
+   */
+  relaxedDispatcher() {
+    this.relaxed ??= new Agent({ connect: { rejectUnauthorized: false } });
+    return this.relaxed;
+  }
 
   /**
    * Assemble the document the core serves: the subscription's own routing and
@@ -197,6 +212,7 @@ export class MihomoController {
         raw: recoverRaw(stored.raw),
         dns: sanitizeDns(stored.dns),
         insecureTls: nodes.filter(n => n['skip-cert-verify'] === true).length,
+        insecureSubscriptionTls: stored.insecureSubscriptionTls === true,
         selected: typeof stored.selected === 'string' ? stored.selected : '',
         updatedAt: typeof stored.updatedAt === 'string' ? stored.updatedAt : null,
         userInfo: normalizeUserInfo(stored.userInfo),
@@ -324,6 +340,8 @@ export class MihomoController {
       usage: this.usageView(),
       importInfo: this.state.importInfo,
       autoRefreshHours: this.state.autoRefreshHours,
+      /** Whether the subscription download is allowed to accept a broken certificate. */
+      insecureSubscriptionTls: this.state.insecureSubscriptionTls,
       lastRefreshAt: this.state.lastRefreshAt,
       nextRefreshAt: this.nextRefreshAt(),
       lastRefreshError: this.state.lastRefreshError,
@@ -382,7 +400,7 @@ export class MihomoController {
       case 'stop': await this.stop(); break;
       case 'select': await this.select(args.node,signal); break;
       case 'configure': {
-        if (args.autoStart === undefined && args.timeZone === undefined && args.autoRefreshHours === undefined) throw new Error('Configuration requires autoStart, timeZone, or autoRefreshHours.');
+        if (args.autoStart === undefined && args.timeZone === undefined && args.autoRefreshHours === undefined && args.insecureSubscriptionTls === undefined) throw new Error('Configuration requires autoStart, timeZone, autoRefreshHours, or insecureSubscriptionTls.');
         const next = {...this.state};
         if (args.autoStart !== undefined) {
           if (typeof args.autoStart !== 'boolean') throw new Error('Auto-start must be true or false.');
@@ -392,6 +410,10 @@ export class MihomoController {
         if (args.autoRefreshHours !== undefined) {
           if (!Number.isInteger(args.autoRefreshHours) || args.autoRefreshHours < 0 || args.autoRefreshHours > 720) throw new Error('Invalid auto-refresh interval; use 0 to disable it or 1–720 hours.');
           next.autoRefreshHours = args.autoRefreshHours;
+        }
+        if (args.insecureSubscriptionTls !== undefined) {
+          if (typeof args.insecureSubscriptionTls !== 'boolean') throw new Error('Subscription certificate verification must be on or off.');
+          next.insecureSubscriptionTls = args.insecureSubscriptionTls;
         }
         await this.save(next); break;
       }
@@ -442,16 +464,20 @@ export class MihomoController {
       const target = new URL(current);
       if (official && (target.protocol !== 'https:' || !RELEASE_HOSTS.has(target.hostname) || target.username || target.password)) throw new Error('Official download redirected to an untrusted host.');
       if (subscription) validateSubscriptionUrl(current);
+      // Verification is skipped for one target only: a subscription download the
+      // operator explicitly allowed, never the core (whose digest is the check
+      // that matters) and never process-wide.
+      const insecure = subscription && !official && this.state.insecureSubscriptionTls === true;
       let response;
       try {
-        response = await this.fetch(current, {dispatcher:this.baseline, signal:combined,redirect:'manual',headers:{'User-Agent':'DSH-Mihomo/1.0 (Clash Meta)','Accept':official?'application/vnd.github+json':'application/yaml,text/yaml,text/plain,*/*'}});
+        response = await this.fetch(current, {dispatcher:insecure?this.relaxedDispatcher():this.baseline, signal:combined,redirect:'manual',headers:{'User-Agent':'DSH-Mihomo/1.0 (Clash Meta)','Accept':official?'application/vnd.github+json':'application/yaml,text/yaml,text/plain,*/*'}});
       } catch (error) {
         const code = error.cause?.code ?? error.code;
         // An expired or untrusted provider certificate is a different problem from a plain network
         // failure, and the operator's fix differs entirely, so the reason must not be flattened.
-        // Certificate verification itself is never disabled, whatever the code says.
-        if (code === 'CERT_HAS_EXPIRED') throw new Error('Download TLS validation failed: the subscription server certificate has expired. Ask the provider to renew it; certificate verification will not be disabled.');
-        if (['UNABLE_TO_GET_ISSUER_CERT_LOCALLY','SELF_SIGNED_CERT_IN_CHAIN','DEPTH_ZERO_SELF_SIGNED_CERT','UNABLE_TO_VERIFY_LEAF_SIGNATURE','CERT_UNTRUSTED','ERR_TLS_CERT_ALTNAME_INVALID'].includes(code)) throw new Error('Download TLS validation failed. Configure a trusted Node CA (NODE_EXTRA_CA_CERTS) and restart DSH; certificate verification will not be disabled.');
+        if (insecure) throw new Error('Download failed. Check bootstrap network connectivity.');
+        if (code === 'CERT_HAS_EXPIRED') throw new Error('Download TLS validation failed: the subscription server certificate has expired. Ask the provider to renew it, or turn on "do not verify the subscription certificate" and read the warning first.');
+        if (['UNABLE_TO_GET_ISSUER_CERT_LOCALLY','SELF_SIGNED_CERT_IN_CHAIN','DEPTH_ZERO_SELF_SIGNED_CERT','UNABLE_TO_VERIFY_LEAF_SIGNATURE','CERT_UNTRUSTED','ERR_TLS_CERT_ALTNAME_INVALID'].includes(code)) throw new Error('Download TLS validation failed. Configure a trusted Node CA (NODE_EXTRA_CA_CERTS) and restart DSH, or turn on "do not verify the subscription certificate" and read the warning first.');
         throw new Error('Download failed. Check bootstrap network connectivity.');
       }
       if ([301,302,303,307,308].includes(response.status)) {
@@ -836,6 +862,7 @@ export class MihomoController {
     if (this.refreshTimer) { clearInterval(this.refreshTimer); this.refreshTimer = null; }
     await this.queue;
     await this.stop();
+    if (this.relaxed) { await this.relaxed.destroy(); this.relaxed = null; }
     await this.direct.destroy();
   }
 }

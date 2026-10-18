@@ -9,13 +9,14 @@ export const inject = ['connection', 'tools'];
 export const parameters = {
   type: 'object', additionalProperties: false,
   properties: {
-    action: {type:'string',enum:['status','install','import','refresh','usage','traffic','start','stop','select','test','latency','configure'],description:'status reads state; install downloads the pinned official Windows core; import replaces nodes; refresh redownloads the saved subscription (allowed while the proxy runs, via a validated config reload); usage reads the subscription quota without touching the nodes; traffic lists live totals and the busiest connections; start/stop affects every session in this DSH Host; select switches one node; test checks global fetch; latency measures every node; configure sets auto-start, the automatic subscription-refresh interval, and/or the model time-zone preference.'},
+    action: {type:'string',enum:['status','install','import','refresh','usage','traffic','start','stop','select','test','latency','configure'],description:'status reads state; install downloads the pinned official Windows core; import replaces nodes; refresh redownloads the saved subscription (allowed while the proxy runs, via a validated config reload); usage reads the subscription quota without touching the nodes; traffic lists live totals and the busiest connections; start/stop affects every session in this DSH Host; select switches one node; test checks global fetch; latency measures every node; configure sets auto-start, the automatic subscription-refresh interval, the model time-zone preference, and whether a subscription download may skip TLS verification.'},
     url: {type:'string',description:'For import: HTTPS Clash/Mihomo subscription URL. Use either url or yaml. Contains secrets: prefer the Settings UI to avoid recording it in the session log.'},
     yaml: {type:'string',description:'For import: Clash/Mihomo YAML with inline proxies. Contains credentials: prefer the Settings UI. Requires proxy stopped. Proxies are validated; routing, groups and providers are inherited with the inbound and host-level keys the plugin must own replaced.'},
     node: {type:'string',description:'For select: an exact imported node name from status.'},
     autoStart: {type:'boolean',description:'For configure: whether the saved core and nodes should start when this plugin mounts.'},
-    timeZone: {type:'string',description:'For configure: manual IANA zone (e.g. Asia/Tokyo or UTC) for model interpretation of unqualified dates/times in all Host sessions. Empty string disables the override. Independent of proxy state; does not change browser/system clocks or saved reminder schedules. configure requires at least autoStart, timeZone, or autoRefreshHours.'},
+    timeZone: {type:'string',description:'For configure: manual IANA zone (e.g. Asia/Tokyo or UTC) for model interpretation of unqualified dates/times in all Host sessions. Empty string disables the override. Independent of proxy state; does not change browser/system clocks or saved reminder schedules. configure requires at least autoStart, timeZone, autoRefreshHours, or insecureSubscriptionTls.'},
     autoRefreshHours: {type:'integer',minimum:0,maximum:720,description:'For configure: refresh the saved subscription every N hours while the plugin is loaded. 0 disables it. A refresh while the proxy runs is applied through a validated core config reload, so a broken subscription leaves the running proxy on its previous nodes.'},
+  insecureSubscriptionTls: {type:'boolean',description:'For configure: whether a saved-subscription download may skip TLS certificate verification. Default false (verify). Enable only when the provider certificate is expired or self-signed, because it stops proving that the subscription host is the one it claims; it applies to the subscription download only and never to the core download or to model/tool traffic.'},
   },
   required:['action'],
 };
@@ -41,7 +42,7 @@ function validate(args) {
   for (const [key,value] of Object.entries(args)) {
     if (!parameters.properties[key] || !matchesSchema(value, parameters.properties[key])) throw new Error('Invalid action parameters.');
   }
-  const allowed = {status:[],install:[],import:['url','yaml'],refresh:[],usage:[],start:[],stop:[],select:['node'],test:[],latency:[],configure:['autoStart','timeZone','autoRefreshHours']}[args.action];
+  const allowed = {status:[],install:[],import:['url','yaml'],refresh:[],usage:[],traffic:[],start:[],stop:[],select:['node'],test:[],latency:[],configure:['autoStart','timeZone','autoRefreshHours','insecureSubscriptionTls']}[args.action];
   if (Object.keys(args).some(key=>key!=='action'&&!allowed.includes(key))) throw new Error('Parameters do not match the action.');
   return args;
 }

@@ -39,6 +39,8 @@ window.__ModuleLoader__.load({
         autoRefreshEvery:'每 {n} 小时', autoRefreshHint:'到期自动重新下载订阅',
         autoRefreshNext:'下次自动更新：{t}', autoRefreshFailed:'上次自动更新失败：',
         autoRefreshNote:'代理运行中也一样自动更新：新配置先交给内核校验，校验不通过就保留原节点，不会把正在用的代理弄断。',
+        insecureTitle:'不校验订阅服务器证书', insecureOn:'已关闭校验',
+        insecureHint:'只影响“下载订阅”这一步，用来处理服务商证书过期或自签名的情况。开启后无法再确认对端就是订阅服务商，同网络上的第三方可能看到或篡改下载内容。内核下载仍会校验，模型和工具的联网也不受影响。',
       },
       en: {
         title:'DSH-only Proxy',intro:'Mihomo core · Main process only · No system network changes',
@@ -74,6 +76,8 @@ window.__ModuleLoader__.load({
         autoRefreshEvery:'Every {n} h', autoRefreshHint:'Re-download the subscription when due',
         autoRefreshNext:'Next automatic refresh: {t}', autoRefreshFailed:'Last automatic refresh failed:',
         autoRefreshNote:'This also works while the proxy runs: the new configuration is validated by the core first, and a failure keeps the previous nodes instead of breaking the proxy you are using.',
+        insecureTitle:'Do not verify the subscription certificate', insecureOn:'Verification is off',
+        insecureHint:'Affects the subscription download only, for providers whose certificate has expired or is self-signed. With it on, the host can no longer be proven to be the provider you intended, and someone on the same network could read or alter what is downloaded. The core download is still verified, and model and tool traffic are unaffected.',
       },
     };
     const timeZones = [
@@ -227,6 +231,10 @@ window.__ModuleLoader__.load({
           const button = (label,args,disabled,primary) => h('button',{type:'button',disabled:busy||disabled,onClick:()=>action(args),className:primary?'dsh-mh-primary':undefined},t(label));
           const isOn = state?.running || state?.proxyActive;
           const usage = state?.usage ?? null;
+          // Off by default. Turning it on deliberately gives up exactly one
+          // guarantee — that the host is the subscription provider — so the panel
+          // keeps saying so while it is on rather than silently remembering it.
+          const insecureSub = state?.insecureSubscriptionTls === true;
           const refreshHours = state?.autoRefreshHours ?? 0;
           const refreshOptions = [0,6,12,24,72];
           // Byte counts arrive as plain integers; a quota can legitimately be absent (0 = not stated).
@@ -305,7 +313,10 @@ window.__ModuleLoader__.load({
               h('label',{htmlFor:'dsh-mh-yaml'},t('yaml')),
               h('textarea',{id:'dsh-mh-yaml',autoComplete:'off',spellCheck:false,value:yaml,disabled:busy||isOn,placeholder:t('yamlPlaceholder'),onChange:e=>setYaml(e.target.value)}),
               h('small',null,t('importHint')),
-              h('div',{className:'dsh-mh-actions'},button('import',{action:'import',...(url.trim()?{url:url.trim()}:{yaml})},(!url.trim()&&!yaml.trim())||(!!url.trim()&&!!yaml.trim())||(isOn&&!url.trim()),true),button('refresh',{action:'refresh'},!state?.subscriptionConfigured))),
+              h('div',{className:'dsh-mh-actions'},button('import',{action:'import',...(url.trim()?{url:url.trim()}:{yaml})},(!url.trim()&&!yaml.trim())||(!!url.trim()&&!!yaml.trim())||(isOn&&!url.trim()),true),button('refresh',{action:'refresh'},!state?.subscriptionConfigured)),
+              h('label',{className:'dsh-mh-check'},h('input',{type:'checkbox',checked:insecureSub,disabled:busy||!state,onChange:e=>action({action:'configure',insecureSubscriptionTls:e.target.checked})}),t('insecureTitle')),
+              h('small',null,t('insecureHint')),
+              insecureSub&&h('div',{className:'dsh-mh-notice dsh-mh-warn',role:'status'},t('insecureOn'))),
             // Quota and automatic refresh live together: both exist only because a subscription URL
             // was saved, and a provider that publishes no `subscription-userinfo` must say so rather
             // than show a zero that looks like an exhausted plan.
