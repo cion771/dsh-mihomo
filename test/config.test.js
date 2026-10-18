@@ -35,12 +35,12 @@ test('the subscription document is inherited instead of being thrown away', () =
   assert.ok(config['proxy-providers'] === undefined);
 });
 
-test('rules the plugin must win are prepended and the model API never enters the tunnel', () => {
+test('the model API rides the selected node and the other priority rules follow it', () => {
   const { config } = build({ rules: ['MATCH,Proxy'], 'proxy-groups': [{ name: 'Proxy', type: 'select', proxies: ['JP 01'] }] });
-  assert.deepEqual(config.rules.slice(0, PRIORITY_RULES.length), PRIORITY_RULES);
-  const modelRule = config.rules.findIndex(rule => rule.startsWith('DOMAIN-SUFFIX,deepseek.com,'));
-  assert.equal(config.rules[modelRule], 'DOMAIN-SUFFIX,deepseek.com,DIRECT');
-  assert.ok(modelRule < config.rules.length - 1, 'the direct rule lands before the catch-all');
+  assert.equal(config.rules[0], `DOMAIN-SUFFIX,deepseek.com,${GROUP}`, 'the model rule comes first so no inherited rule can win it');
+  assert.deepEqual(config.rules.slice(1, 1 + PRIORITY_RULES.length), PRIORITY_RULES);
+  assert.ok(!config.rules.some(rule => rule === 'DOMAIN-SUFFIX,deepseek.com,DIRECT'), 'it is never sent direct by default');
+  assert.ok(config.rules.indexOf(`DOMAIN-SUFFIX,deepseek.com,${GROUP}`) < config.rules.indexOf('MATCH,DSH'), 'it lands before the catch-all');
 });
 
 test('the inherited catch-all is retargeted so the node picker still decides', () => {
@@ -50,7 +50,7 @@ test('the inherited catch-all is retargeted so the node picker still decides', (
   });
   assert.equal(config.rules.at(-1), `MATCH,${GROUP}`);
   assert.equal(report.rules, 2, 'the report counts inherited rules, not the prepended ones');
-  assert.equal(config.rules.length, PRIORITY_RULES.length + 2);
+  assert.equal(config.rules.length, PRIORITY_RULES.length + 3, 'the model rule plus the priority block plus the inherited two');
   assert.equal(referencedTargets(config).has('Proxy'), true, 'the inherited group is still referenced');
 });
 

@@ -60,11 +60,12 @@ const md5 = value => createHash('md5').update(value).digest('hex');
 
 /**
  * Rules the plugin wins before any inherited routing. Private ranges must not
- * reach a remote node (it would fail and leak nothing useful), and the model API
- * is domestic: tunnelling it adds a foreign round trip to every request.
+ * reach a remote node (it would fail and leak nothing useful), and same-region
+ * names are faster and safer direct. The model API is deliberately NOT in this
+ * list: it is routed to the plugin's selector by `assembleConfig` instead, so the
+ * node the operator picked also carries the model traffic.
  */
 export const PRIORITY_RULES = [
-  'DOMAIN-SUFFIX,deepseek.com,DIRECT',
   'DOMAIN-SUFFIX,cn,DIRECT',
   'DOMAIN-SUFFIX,localhost,DIRECT',
   'IP-CIDR,127.0.0.0/8,DIRECT,no-resolve',
@@ -264,6 +265,13 @@ export function assembleConfig(options) {
   if (!matched) rules.push(`MATCH,${GROUP}`);
   report.rules = rules.length;
 
+  // The model API goes through the selector this plugin owns, ahead of every
+  // inherited rule: the point of the switch is that clicking a node changes what
+  // the agent's own requests do, and a provider rule must not be able to quietly
+  // send them elsewhere. It costs a foreign round trip per request when the node
+  // is overseas, which is the trade the operator asked for.
+  const modelRule = `DOMAIN-SUFFIX,deepseek.com,${GROUP}`;
+
   const config = {
     ...base,
     'mixed-port': mixedPort,
@@ -284,7 +292,7 @@ export function assembleConfig(options) {
     profile: { 'store-selected': false, 'store-fake-ip': false },
     proxies: nodes,
     'proxy-groups': groups,
-    rules: [...PRIORITY_RULES, ...rules],
+    rules: [modelRule, ...PRIORITY_RULES, ...rules],
   };
   for (const key of ['proxy-providers', 'rule-providers']) if (!(key in config)) delete config[key];
   return { config, report };

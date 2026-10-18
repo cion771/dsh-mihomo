@@ -52,18 +52,20 @@ test('imports nodes, neutralising dangerous top-level subscription settings',()=
   assert.equal(conf.tun.enable,false);assert.equal(conf.dns.enable,false);assert.equal(conf['allow-lan'],false);
   assert.equal(conf['bind-address'],'127.0.0.1');assert.equal(conf['external-controller'],'127.0.0.1:30002');
   assert.deepEqual(conf.authentication,['dsh:password']);assert.deepEqual(conf['skip-auth-prefixes'],[]);
-  assert.deepEqual(conf.rules.slice(0,PRIORITY_RULES.length),PRIORITY_RULES);
+  assert.deepEqual(conf.rules.slice(1,1+PRIORITY_RULES.length),PRIORITY_RULES);
+  assert.equal(conf.rules[0],'DOMAIN-SUFFIX,deepseek.com,DSH');
   assert.equal(conf.rules.at(-1),'MATCH,DSH');
   for(const k of ['listeners','tunnels','script'])assert.equal(conf[k],undefined);
   assert.equal(conf['external-controller-pipe'],'');
 });
 
-test('same-region and local traffic is routed around the tunnel',()=>{
+test('same-region traffic is routed around the tunnel while the model API follows the selected node',()=>{
   const parsed = parseSubscription(fixture);
   const rules = assemble(parsed.raw, parsed.nodes).rules;
-  // The model API answers from the same region; tunnelling it adds a round trip and risks a
-  // foreign exit being throttled, so it must match a pre-MATCH rule.
-  assert.ok(rules.includes('DOMAIN-SUFFIX,deepseek.com,DIRECT'));
+  // The operator picked a node on purpose: the model API must obey that choice, which means the
+  // rule has to name the selector rather than jump the queue with a hard-coded target.
+  assert.equal(rules[0],'DOMAIN-SUFFIX,deepseek.com,DSH');
+  assert.ok(!rules.includes('DOMAIN-SUFFIX,deepseek.com,DIRECT'));
   assert.ok(rules.includes('DOMAIN-SUFFIX,cn,DIRECT'));
   // The catch-all stays last: anything not exempted still has to leave through the proxy.
   assert.equal(rules.filter(r=>r.startsWith('MATCH,')).length,1);
