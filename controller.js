@@ -163,7 +163,16 @@ export class MihomoController {
 
   async autostart() {
     if (!this.state.autoStart) return;
-    await this.run({action:'start'}).catch(() => { if (this.phase !== 'running') this.phase = 'error'; });
+    // A cold Host start can lose the race with the 61 MB core's first page-in — antivirus and a
+    // cold disk routinely push the controller past the readiness window while the config itself is
+    // fine. Retrying once with freshly picked ports turns that transient failure into a working
+    // proxy instead of a panel that only comes back when the user clicks Start by hand.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { await this.run({action:'start'}); } catch { /* run() records the phase and the reason */ }
+      if (this.phase === 'running') return;
+      if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+    if (this.phase !== 'running') this.phase = 'error';
   }
 
   startAutoRefresh() {
@@ -585,7 +594,7 @@ export class MihomoController {
         try { const version = await this.api('/version',{},signal,750); if (version.version?.includes(CORE_VERSION)) { ready = true; break; } } catch {}
         await wait(120,undefined,{signal});
       }
-      if (!ready) throw new Error('Core controller did not become ready. Check ports or configuration.');
+      if (!ready) throw new Error(`Core controller did not become ready. Check ports or configuration.${await this.logTail().then(d => d ? ` — ${d}` : '', () => '')}`);
       const proxies = await this.api('/proxies',{},signal);
       if (!Array.isArray(proxies.proxies?.[GROUP]?.all) || proxies.proxies[GROUP].all.length !== this.state.nodes.length) throw new Error('Core node group is invalid.');
       // Capture the currently active dispatcher, not a stale value from plugin mount.

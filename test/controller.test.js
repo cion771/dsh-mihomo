@@ -393,3 +393,34 @@ test('failed downloads do not install an unverified executable',async()=>{
   const controller=await new MihomoController(dir,{fetch:async()=>Response.json({tag_name:CORE_VERSION,assets:[]})}).init();
   try{await assert.rejects(controller.run({action:'install'}),/Official asset/);assert.equal(controller.status().coreInstalled,false);await assert.rejects(fs.access(path.join(dir,'mihomo.exe')));}finally{await controller.dispose();await fs.rm(dir,{recursive:true,force:true});}
 });
+
+test('autostart retries a failed start once instead of leaving the proxy down',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-mihomo-autostart-'));
+  const controller=await new MihomoController(dir,{fetch:async()=>new Response('{}')}).init();
+  try{
+    controller.state.autoStart=true;
+    let attempts=0;
+    controller.run=async()=>{
+      attempts+=1;
+      if(attempts===1){controller.phase='error';throw new Error('Core controller did not become ready. Check ports or configuration.');}
+      controller.phase='running';
+      return controller.status();
+    };
+    await controller.autostart();
+    assert.equal(attempts,2,'a transient readiness timeout is retried once');
+    assert.equal(controller.status().phase,'running','the retry leaves a working proxy');
+  }finally{await controller.dispose();await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('autostart stops after two attempts and keeps the failure visible',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-mihomo-autostart2-'));
+  const controller=await new MihomoController(dir,{fetch:async()=>new Response('{}')}).init();
+  try{
+    controller.state.autoStart=true;
+    let attempts=0;
+    controller.run=async()=>{attempts+=1;controller.phase='error';throw new Error('Core controller did not become ready. Check ports or configuration.');};
+    await controller.autostart();
+    assert.equal(attempts,2,'autostart does not loop forever on a real failure');
+    assert.equal(controller.status().phase,'error','the panel still shows the problem');
+  }finally{await controller.dispose();await fs.rm(dir,{recursive:true,force:true});}
+});

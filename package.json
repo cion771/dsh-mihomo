@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-mihomo",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "private": true,
   "description": "Managed Mihomo proxy and manual model time-zone context for DSH",
   "license": "MIT",
