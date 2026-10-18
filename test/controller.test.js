@@ -479,17 +479,20 @@ test('the subscription TLS choice is remembered across a reload',async()=>{
 
 test('the running proxy is published to the environment and taken back on stop',async()=>{
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-mihomo-env-'));
-  const before={HTTPS_PROXY:process.env.HTTPS_PROXY,https_proxy:process.env.https_proxy,HTTP_PROXY:process.env.HTTP_PROXY,http_proxy:process.env.http_proxy,ALL_PROXY:process.env.ALL_PROXY,all_proxy:process.env.all_proxy,NO_PROXY:process.env.NO_PROXY,no_proxy:process.env.no_proxy};
+  const before={HTTPS_PROXY:process.env.HTTPS_PROXY,https_proxy:process.env.https_proxy,HTTP_PROXY:process.env.HTTP_PROXY,http_proxy:process.env.http_proxy,ALL_PROXY:process.env.ALL_PROXY,all_proxy:process.env.all_proxy,NO_PROXY:process.env.NO_PROXY,no_proxy:process.env.no_proxy,BILI_UPSTREAM_PROXY:process.env.BILI_UPSTREAM_PROXY,BILI_UPSTREAM_PROXY_MODE:process.env.BILI_UPSTREAM_PROXY_MODE};
   for(const key of Object.keys(before))delete process.env[key];
   process.env.NO_PROXY='corp.internal';
   const controller=await new MihomoController(dir,{fetch:async()=>new Response('{}')}).init();
   try{
     controller.session={proxyPassword:'pw',mixedPort:30666,apiPort:30667,apiSecret:'s'};
     controller.applyProxyEnv();
-    const proxy='http://dsh:pw@127.0.0.1:30666';
+    const proxy='http://127.0.0.1:30666';
     assert.equal(process.env.HTTPS_PROXY,proxy,'a client reading HTTPS_PROXY finds the tunnel');
     assert.equal(process.env.HTTP_PROXY,proxy);
     assert.equal(process.env.ALL_PROXY,proxy,'the all_proxy fallback is covered too');
+    assert.ok(!process.env.HTTPS_PROXY.includes('@'),'no password is handed to child processes');
+    assert.equal(process.env.BILI_UPSTREAM_PROXY,proxy,'the relay plugin\'s own override is set too');
+    assert.equal(process.env.BILI_UPSTREAM_PROXY_MODE,'manual','without manual mode the override is ignored');
     assert.match(process.env.NO_PROXY,/corp\.internal/,'an existing bypass list is kept');
     assert.match(process.env.NO_PROXY,/deepseek\.com/,'the domestic model API is excluded from the tunnel');
     assert.equal(process.env.no_proxy,process.env.NO_PROXY,'both spellings agree');
@@ -531,4 +534,43 @@ test('the environment export stays off when the operator switched it off',async(
       assert.equal(again.status().proxyEnv,false);
     }finally{await again.dispose();}
   }finally{await first.dispose();if(before!==undefined)process.env.HTTPS_PROXY=before;await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('the relay plugin finds the proxy through its own settings file',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-mihomo-up-'));
+  const configFile=path.join(dir,'billion-context.json');
+  await fs.writeFile(configFile,JSON.stringify({compress:{enabled:true}},null,2));
+  const controller=await new MihomoController(dir,{fetch:async()=>new Response('{}'),upstreamConfig:configFile}).init();
+  try{
+    controller.session={proxyPassword:'pw',mixedPort:30680,apiPort:30681,apiSecret:'s'};
+    const written=await controller.publishUpstream();
+    assert.equal(written,'http://127.0.0.1:30680','the reachable address is returned');
+    const saved=JSON.parse(await fs.readFile(configFile,'utf8'));
+    assert.equal(saved.upstreamProxy,'http://127.0.0.1:30680','the address is written');
+    assert.equal(saved.upstreamProxyMode,'manual','without manual mode the relay ignores it');
+    assert.deepEqual(saved.compress,{enabled:true},'unrelated settings in that file are preserved');
+
+    // Rewriting an identical value must not touch the file again.
+    const beforeStat=await fs.stat(configFile);
+    await controller.publishUpstream();
+    assert.equal((await fs.stat(configFile)).mtimeMs,beforeStat.mtimeMs,'an unchanged address is not rewritten');
+
+    await controller.retractUpstream();
+    const after=JSON.parse(await fs.readFile(configFile,'utf8'));
+    assert.equal('upstreamProxy' in after,false,'turning the switch off withdraws the address');
+    assert.equal('upstreamProxyMode' in after,false);
+    assert.deepEqual(after.compress,{enabled:true},'the rest of the file survives the withdrawal');
+  }finally{await controller.dispose();await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('an unreadable relay settings file is left alone rather than replaced',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-mihomo-up2-'));
+  const configFile=path.join(dir,'billion-context.json');
+  await fs.writeFile(configFile,'{ not json');
+  const controller=await new MihomoController(dir,{fetch:async()=>new Response('{}'),upstreamConfig:configFile}).init();
+  try{
+    controller.session={proxyPassword:'pw',mixedPort:30682,apiPort:30683,apiSecret:'s'};
+    assert.equal(await controller.publishUpstream(),null,'nothing is written over a file we cannot parse');
+    assert.equal(await fs.readFile(configFile,'utf8'),'{ not json','the operator\'s broken file is untouched');
+  }finally{await controller.dispose();await fs.rm(dir,{recursive:true,force:true});}
 });

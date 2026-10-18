@@ -284,7 +284,13 @@ export function assembleConfig(options) {
     'external-controller': `127.0.0.1:${apiPort}`,
     secret: apiSecret,
     authentication: [`dsh:${proxyPassword}`],
-    'skip-auth-prefixes': [],
+    // Loopback is exempt from the account above because the listener is bound to
+    // 127.0.0.1 with allow-lan off (nobody off this machine can reach it), and
+    // clients that take a bare proxy URL -- the environment export, another
+    // plugin's upstream setting -- have no way to supply credentials. A profile
+    // that could widen this prefix for a non-loopback address is still removed
+    // by BLANKED before this line runs.
+    'skip-auth-prefixes': ['127.0.0.1/32', '::1/128'],
     mode: 'rule',
     'log-level': 'warning',
     ipv6: false,

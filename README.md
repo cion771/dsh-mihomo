@@ -31,12 +31,13 @@
 - **代理：** 同一 DSH Host 主进程中使用 Node 全局 HTTP dispatcher 的 `global fetch`，包括采用它的模型/API 和 HTTP SDK 请求。影响该 Host 的所有会话，不是仅当前会话。其中 `.cn`、`localhost`、私有网段由内核规则直连；模型 API（`deepseek.com`）固定走你在面板里选中的节点，这条规则排在所有订阅规则之前，订阅自带规则改不了它。
 - **时区偏好：** 每个模型步骤末尾追加一条明确的 Host 时间上下文快照，使手动选择覆盖内置浏览器时区快照；关闭时追加重置语义，避免历史会话继续沿用旧偏好。只影响模型对未限定日期/时间的解释，用户明确写出的时区仍优先。
 - **自动更新：** 插件加载期间由一个 5 分钟粒度、`unref()` 过的定时器比较时间戳；只有到期才真正下载订阅，因此一次自动更新等于一次订阅下载请求。定时器失败只记录原因供界面显示，不会抛出到 Host，也不改变代理状态；间隔为默认的 0（关闭）时不发起任何请求。间隔与上次更新/失败时间戳保存在 Host，重启后继续生效。
-- **环境变量（供读环境的客户端）：** 内核运行期间把 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`（含小写）设为本地混合端口，并合并 `NO_PROXY`；停止或卸载时逐字还原。默认开启，界面可关闭（`dsh_proxy` 的 `configure { proxyEnv }`）。这是给 Codex 订阅插件的 GPT 上游这类「在请求时读环境变量、走 `node:https`」的客户端用的，dispatcher 对它们无效。
+- **环境变量（供读环境的客户端）：** 内核运行期间把 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`（含小写）设为 `http://127.0.0.1:<混合端口>`（不含密码，否则每个子进程都会拿到凭据），并合并 `NO_PROXY`；停止或卸载时逐字还原。默认开启，界面可关闭（`dsh_proxy` 的 `configure { proxyEnv }`）。这是给 Codex 订阅插件的 GPT 上游这类「在请求时读环境变量、走 `node:https`」的客户端用的，dispatcher 对它们无效。
+- **转发插件的上游设置：** 模型流量经过 `billion-context` 转一层，而它默认就是「直连」，根本不看 `HTTPS_PROXY`（`opts` 里带上 `explicitDirect`/`defaultDirect` 时会把探测结果丢掉），所以只设环境变量对它无效。插件因此在启动时把自己的地址写进它自己的设置文件 `~/.config/billion-context/billion-context.json` 的 `upstreamProxy` + `upstreamProxyMode: manual`，只改这两个键、其余内容原样保留、值没变就不重写；关掉开关时只撤回这两个键。该文件由它自己解析，改完需要它重新读一次配置（重启 DSH 即可）。
 - **不会改：** Windows 注册表、WinINET/WinHTTP 系统代理、网卡、路由、防火墙、TUN、系统/浏览器时钟。不会重写已有提醒。环境变量只在运行期间设置且停止即还原，`NO_PROXY` 保留原有条目；关掉界面上的开关后一个变量都不写。
 - **不覆盖：** 内置/外部浏览器、外部命令和 SDK 独立网络栈、其他 DSH 进程、worker、`node:http` 遥测、独立/显式 dispatcher。当前 DSH 自带 `web_fetch` 的地址钉扎传输也是一个明确例外；不要把它的失败误判成模型代理失败。
 - 回环地址、`.localhost`、`.local` 及私有 IP 字面地址直接连接。其他域名由 Mihomo 代理解析；本地网络的自定义域名不自动加入直连名单。
 - 只接管支持范围，不宣称全进程流量强制隔离或完整 kill switch。运行中的内核意外退出时，不自动恢复直连；公开 fetch 会通过关闭的本地端口失败，显式停止恢复原策略。启动完成前尚未接管；启动失败也恢复原策略。
-- 同一机器的其他程序不会自动使用此代理。Mihomo 的本地 mixed-port 还有随机认证，controller 另有独立随机 secret，不对前端公开。
+- 同一机器的其他程序不会自动使用此代理。mixed-port 只绑定 `127.0.0.1`（`allow-lan: false`），且**回环来源免认证**（`skip-auth-prefixes: 127.0.0.1/32, ::1/128`）——因为环境变量和第三方配置里只能放一个裸地址，塞不进账号密码，而密码一旦写进环境变量会被每个子进程继承。代价是本机任意进程都能用这个端口出去；controller 另有独立随机 secret，不对前端公开。
 
 ## 订阅格式和安全配置
 
@@ -57,7 +58,7 @@
 
 ## 交给内核的配置
 
-最终写入 `managed.yaml` 的文档 = **订阅原文 + 必管键覆盖**。覆盖的键：`mixed-port`（回环 + 随机认证）、`external-controller`（127.0.0.1 + 每次启动重新生成的 secret）、`authentication`（强制存在，`skip-auth-prefixes` 清空）、`allow-lan: false`、`bind-address: 127.0.0.1`、`mode: rule`、`ipv6: false`、`log-level: warning`、`find-process-mode: off`、`geo-auto-update: false`、`profile.store-selected/-fake-ip: false`，以及 `port` / `socks-port` / `redir-port` / `tproxy-port` 归零、`tun.enable` 与 `auto-route` / `auto-detect-interface` 关闭。
+最终写入 `managed.yaml` 的文档 = **订阅原文 + 必管键覆盖**。覆盖的键：`mixed-port`（回环；优先沿用上次端口，被占用才重新分配）、`external-controller`（127.0.0.1 + 每次启动重新生成的 secret）、`authentication`（强制存在）与 `skip-auth-prefixes`（固定为回环豁免）、`allow-lan: false`、`bind-address: 127.0.0.1`、`mode: rule`、`ipv6: false`、`log-level: warning`、`find-process-mode: off`、`geo-auto-update: false`、`profile.store-selected/-fake-ip: false`，以及 `port` / `socks-port` / `redir-port` / `tproxy-port` 归零、`tun.enable` 与 `auto-route` / `auto-detect-interface` 关闭。
 
 **整段删除**：`listeners`、`tunnels`、`iptables`、`ss-config`、`vmess-config`、`tuic-server`、`sniffer`、`hosts`、`script`、`sub-rules`、`ntp`、`geox-url`、`experimental`、`interface-name`、`routing-mark`、`captive-portal`；`external-ui`、`external-ui-url`、`external-controller-unix` / `-pipe` / `-tls` 被清空。这些都会开入站服务、绑定网卡，或让订阅把内核指向宿主上的任意路径——继承它们等于把主机交给订阅。
 
@@ -65,7 +66,7 @@
 
 **规则**：订阅的 `rules`（含 `RULE-SET`）原样接在插件自己的规则之后；订阅自己的 `MATCH` 会被改指 `DSH`，所以节点选择对订阅路由的流量同样生效；订阅没写 `MATCH` 时补一条 `MATCH,DSH`。插件自己的规则分两类：`.cn`、`localhost`、私有网段与 `::1` / `fc00::/7` 直连（把内网塞进境外节点只会失败），`deepseek.com` 也直连——它是境内服务，经隧道走只会给每个请求加一个往返；反过来，**只有经隧道才连得上的上游**（`chatgpt.com`、`openai.com`、`oaistatic.com`、`oaiusercontent.com`）固定指向 `DSH` 选择器并排在第一条，这样点节点真的会改变 Codex / GPT 的出口，订阅自带的规则也无法把它们改回直连。
 
-**环境变量开关**：有些客户端不读 Host 的 dispatcher，而是在每次请求时读 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`（Codex 订阅插件的 GPT 上游就是这样，它走 `node:https` + `HttpsProxyAgent`，因此 dispatcher 对它无效）。所以内核运行期间插件会把这几个变量（连同小写形式）设为 `http://dsh:<密码>@127.0.0.1:<混合端口>`，并把 `NO_PROXY` 合并为「原有值 + `localhost,127.0.0.1,deepseek.com,.cn`」，停止时逐字还原。默认开启；关掉后 Host 进程环境完全不受影响，代价是这类客户端无法联网。子进程会继承这些变量。
+**环境变量开关**：有些客户端不读 Host 的 dispatcher，而是在每次请求时读 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`（Codex 订阅插件的 GPT 上游就是这样，它走 `node:https` + `HttpsProxyAgent`，因此 dispatcher 对它无效）。所以内核运行期间插件会把这几个变量（连同小写形式）设为 `http://127.0.0.1:<混合端口>`，并把 `NO_PROXY` 合并为「原有值 + `localhost,127.0.0.1,deepseek.com,.cn`」，停止时逐字还原。默认开启；关掉后 Host 进程环境完全不受影响，代价是这类客户端无法联网。子进程会继承这些变量，所以地址里不放密码（回环本来就免认证）。
 
 **没有可继承的文档时**（粘贴的 YAML、旧版本只存了节点列表），退化为纯节点配置：上述规则之后直接 `MATCH,DSH`。界面会在状态里说明这次是“沿用订阅规则”还是“仅节点”。
 
@@ -108,7 +109,7 @@ UI 不回显保存的订阅地址或节点凭据，不记录到会话。`dsh_pro
 
 - **配置装配**（`test/config.test.js`）：继承订阅文档后仍必须是一份内核接受、宿主可控的配置——覆盖键生效、危险键被整段剥离、provider 路径被改写进数据目录、`type: file` 的 provider 被丢弃、悬空分组被修复、`MATCH` 改指 `DSH`、没有可继承文档时退化为纯节点配置。
 - **Host 策略**（`test/policy.test.js`）：节点校验、DNS 清洗、TLS 选项保留、凭证与代理环境隔离、日志脱敏，以及订阅元信息（`subscription-userinfo` / `profile-update-interval`）的解析与正文优先于响应头。
-- **Host 控制器**（`test/controller.test.js`）：真实 dispatcher 的带认证 CONNECT、本地直连、安装校验、启动回滚、延迟并发上限、时区偏好持久化，以及订阅用量读写、代理运行中的校验后热重载与失败保留原节点、自动更新的到期判定与失败退避、订阅证书开关的作用范围（默认走校验 dispatcher，仅在开启且仅对订阅生效，重启后仍保持）。
+- **Host 控制器**（`test/controller.test.js`）：真实 dispatcher 的带认证 CONNECT、本地直连、安装校验、启动回滚、延迟并发上限、时区偏好持久化，以及订阅用量读写、代理运行中的校验后热重载与失败保留原节点、自动更新的到期判定与失败退避、订阅证书开关的作用范围（默认走校验 dispatcher，仅在开启且仅对订阅生效，重启后仍保持）、环境变量发布与撤回（地址不含密码、`NO_PROXY` 合并且可还原）、转发插件设置文件的合并写入与按需撤回（不可解析的文件不覆盖）。
 - **时间上下文**（`test/timezone.test.js`）：IANA 校验、实际 UTC 偏移换算、waterfall 决策字段保留，以及启用/关闭快照语义。
 - **Client 界面**（`test/client.test.js`）：用 jsdom + 页面同版本 React 18 真实渲染设置页并模拟点击，覆盖“点节点能选中并应用”“Esc/点外关闭”“延迟数值渲染”“时区保存与重置”“用量按人类可读单位渲染且间隔点击即生效”“服务商未提供用量/未提供总额度时不画成 0 或满格”“运行中仍可更新订阅”，以及一条静态约束——**任何控件的文字颜色都不允许使用背景 token**（这个撞色 bug 出现过两次）。
 

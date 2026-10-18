@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { homedir } from 'node:os';
-import { MihomoController } from './controller.js';
+import { MihomoController, UPSTREAM_CONFIG } from './controller.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { timeZoneHook } from './timezone.js';
 import { matchesSchema } from './validation.js';
@@ -50,7 +50,7 @@ function validate(args) {
 
 export async function apply(ctx) {
   const base = process.env.DSH_PROFILE_DIR ?? path.join(homedir(),'.dsh');
-  const controller = await new MihomoController(path.join(base,'data','dsh-mihomo')).init();
+  const controller = await new MihomoController(path.join(base,'data','dsh-mihomo'),{upstreamConfig:UPSTREAM_CONFIG}).init();
   ctx.effect(() => () => controller.dispose());
   ctx.on('agent/pre-step', timeZoneHook(() => controller.state.timeZone, createUserMessage), {prepend:true});
   ctx.connection.fetch.register({

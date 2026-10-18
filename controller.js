@@ -1,5 +1,6 @@
 import { promises as fs, createWriteStream } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { randomBytes, createHash } from 'node:crypto';
 import { createServer } from 'node:net';
 import { spawn } from 'node:child_process';
@@ -113,15 +114,25 @@ export function normalizeRefreshHours(value) {
   return Number.isInteger(value) && value >= 0 && value <= 720 ? value : 0;
 }
 
-export async function reservePorts() {
+/**
+ * Reserves the loopback ports the core will bind. A previously used mixed port is
+ * preferred so the address published to other clients survives a restart; when it
+ * is taken the kernel picks a fresh one and the published value is rewritten.
+ */
+export async function reservePorts(preferred) {
   const servers = [];
+  const listen = (server, port) => new Promise((resolve,reject) => { server.once('error',reject); server.listen(port,'127.0.0.1',resolve); });
   try {
-    for (let i = 0; i < 2; i++) {
-      const server = createServer(); servers.push(server);
-      await new Promise((resolve,reject) => { server.once('error',reject); server.listen(0,'127.0.0.1',resolve); });
+    const first = createServer(); servers.push(first);
+    try {
+      await listen(first, Number.isInteger(preferred) && preferred > 0 ? preferred : 0);
+    } catch {
+      await listen(first, 0);
     }
+    const second = createServer(); servers.push(second);
+    await listen(second, 0);
     return servers.map(s => s.address().port);
-  } finally { await Promise.all(servers.map(s => new Promise(resolve => s.close(resolve)))); }
+  } finally { await Promise.all(servers.map(s => new Promise(resolve => s.close(() => resolve())))); }
 }
 
 /**
@@ -131,8 +142,10 @@ export async function reservePorts() {
  * and loopback hosts stay direct: DeepSeek needs no tunnel, and sending the
  * local port through itself would loop.
  */
-const PROXY_ENV_KEYS = ['HTTPS_PROXY','https_proxy','HTTP_PROXY','http_proxy','ALL_PROXY','all_proxy','NO_PROXY','no_proxy'];
+const PROXY_ENV_KEYS = ['HTTPS_PROXY','https_proxy','HTTP_PROXY','http_proxy','ALL_PROXY','all_proxy','NO_PROXY','no_proxy','BILI_UPSTREAM_PROXY','BILI_UPSTREAM_PROXY_MODE'];
 const PROXY_ENV_DIRECT = 'localhost,127.0.0.1,deepseek.com,.cn';
+/** Where billion-context reads its own settings; mirrored so it can find us. */
+export const UPSTREAM_CONFIG = path.join(os.homedir(), '.config', 'billion-context', 'billion-context.json');
 
 export function createProcessDispatcher({ mixedPort, proxyPassword }) {
   const proxy = `http://127.0.0.1:${mixedPort}`;
@@ -150,9 +163,10 @@ export class MihomoController {
     this.baseline = getGlobalDispatcher();
     this.fetch = options.fetch ?? httpFetch;
     this.spawn = options.spawn ?? spawn;
+    this.upstreamConfig = options.upstreamConfig ?? null;
     this.ports = options.reservePorts ?? reservePorts;
     this.probeImpl = options.probe;
-    this.state = { timeZone: null, autoStart: false, subscriptionUrl: '', nodes: [], raw: null, dns: null, insecureTls: 0, insecureSubscriptionTls: false, proxyEnv: true, selected: '', updatedAt: null, userInfo: null, userInfoAt: null, importInfo: null, autoRefreshHours: 0, lastRefreshAt: null, lastRefreshErrorAt: null, lastRefreshError: null };
+    this.state = { timeZone: null, autoStart: false, subscriptionUrl: '', nodes: [], raw: null, dns: null, insecureTls: 0, insecureSubscriptionTls: false, proxyEnv: true, mixedPort: 0, selected: '', updatedAt: null, userInfo: null, userInfoAt: null, importInfo: null, autoRefreshHours: 0, lastRefreshAt: null, lastRefreshErrorAt: null, lastRefreshError: null };
     this.kernel = null;
     this.phase = 'stopped'; this.error = null;
     this.child = null; this.session = null; this.dispatcher = null; this.logStream = null;
@@ -186,14 +200,59 @@ export class MihomoController {
    */
   applyProxyEnv() {
     if (this.state.proxyEnv !== true || this.envSaved || !this.session) return;
-    const proxy = `http://dsh:${this.session.proxyPassword}@127.0.0.1:${this.session.mixedPort}`;
+    // No credentials in the URL: loopback is exempt from the inbound account, and
+    // a password here would be inherited by every child process the Host starts.
+    const proxy = `http://127.0.0.1:${this.session.mixedPort}`;
     const saved = {};
     for (const key of PROXY_ENV_KEYS) saved[key] = process.env[key];
     for (const key of ['HTTPS_PROXY','https_proxy','HTTP_PROXY','http_proxy','ALL_PROXY','all_proxy']) process.env[key] = proxy;
     const merged = [saved.NO_PROXY, saved.no_proxy, PROXY_ENV_DIRECT].map(v => v?.trim?.()).filter(Boolean).join(',');
     process.env.NO_PROXY = merged;
     process.env.no_proxy = merged;
+    // billion-context reads these directly and gives them priority over anything else.
+    process.env.BILI_UPSTREAM_PROXY = proxy;
+    process.env.BILI_UPSTREAM_PROXY_MODE = 'manual';
     this.envSaved = saved;
+  }
+
+  /**
+   * billion-context relays the model traffic and resolves its upstream proxy once,
+   * at start-up. Its default mode is a deliberate "direct" that ignores
+   * HTTP(S)_PROXY, so the environment above cannot reach it; its own settings file
+   * is the supported channel. The file is only rewritten when the value differs,
+   * it is never created from nothing when it holds other settings we cannot read,
+   * and `upstreamProxyMode: manual` is written with it so the value is not ignored.
+   */
+  async publishUpstream() {
+    if (this.state.proxyEnv !== true || !this.session || !this.upstreamConfig) return null;
+    const file = this.upstreamConfig;
+    const want = `http://127.0.0.1:${this.session.mixedPort}`;
+    let current;
+    try {
+      const raw = await fs.readFile(file, 'utf8');
+      current = raw.trim() ? JSON.parse(raw) : {};
+    } catch (error) {
+      if (error.code !== 'ENOENT') return null;
+      current = {};
+    }
+    if (!current || typeof current !== 'object' || Array.isArray(current)) return null;
+    if (current.upstreamProxy === want && current.upstreamProxyMode === 'manual') return want;
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await atomicWrite(file, `${JSON.stringify({ ...current, upstreamProxy: want, upstreamProxyMode: 'manual' }, null, 2)}\n`);
+    return want;
+  }
+
+  /** Removes only the two keys publishUpstream owns, leaving the rest untouched. */
+  async retractUpstream() {
+    const file = this.upstreamConfig;
+    if (!file) return false;
+    let current;
+    try { current = JSON.parse(await fs.readFile(file, 'utf8')); } catch { return false; }
+    if (!current || typeof current !== 'object' || Array.isArray(current)) return false;
+    if (!('upstreamProxy' in current) && !('upstreamProxyMode' in current)) return false;
+    const { upstreamProxy, upstreamProxyMode, ...rest } = current;
+    await atomicWrite(file, `${JSON.stringify(rest, null, 2)}\n`);
+    return true;
   }
 
   clearProxyEnv() {
@@ -254,6 +313,7 @@ export class MihomoController {
         // Absent in older state files, which predate the option: those installs
         // asked for the tunnel to be usable by GPT clients, so default it on.
         proxyEnv: stored.proxyEnv !== false,
+      mixedPort: Number.isInteger(stored.mixedPort) && stored.mixedPort > 0 ? stored.mixedPort : 0,
         selected: typeof stored.selected === 'string' ? stored.selected : '',
         updatedAt: typeof stored.updatedAt === 'string' ? stored.updatedAt : null,
         userInfo: normalizeUserInfo(stored.userInfo),
@@ -379,6 +439,7 @@ export class MihomoController {
       autoStart: this.state.autoStart,
       proxyEnv: this.state.proxyEnv,
       proxyEnvActive: this.envSaved !== null,
+      mixedPort: this.session?.mixedPort ?? (this.state.mixedPort || null),
       subscriptionConfigured: !!this.state.subscriptionUrl,
       usage: this.usageView(),
       importInfo: this.state.importInfo,
@@ -464,7 +525,7 @@ export class MihomoController {
         }
         await this.save(next);
         // The switch must take effect on the running session, not only after a restart.
-        if (next.proxyEnv) this.applyProxyEnv(); else this.clearProxyEnv();
+        if (next.proxyEnv) { this.applyProxyEnv(); await this.publishUpstream(); } else { this.clearProxyEnv(); await this.retractUpstream(); }
         break;
       }
       case 'test': return this.test(signal);
@@ -710,7 +771,7 @@ export class MihomoController {
     const stat = await fs.stat(this.file('mihomo.exe'));
     if (stat.size > MAX_EXE || sha256(await fs.readFile(this.file('mihomo.exe'))) !== this.kernel.exeSha256) throw new Error('Kernel executable integrity check failed; reinstall it.');
     this.phase = 'starting';
-    const [mixedPort,apiPort] = await this.ports();
+    const [mixedPort,apiPort] = await this.ports(this.state.mixedPort || undefined);
     this.session = {mixedPort,apiPort,apiSecret:token(),proxyPassword:token(),selected:this.state.selected};
     await atomicWrite(this.file('managed.yaml'),encodeConfig(this.managedConfig(this.state)));
     try {
@@ -747,7 +808,10 @@ export class MihomoController {
       this.dispatcher = createProcessDispatcher(this.session);
       setGlobalDispatcher(this.dispatcher);
       this.phase = 'running'; this.error = null;
+      // Remember the port so the address handed to other clients stays valid.
+      if (this.state.mixedPort !== mixedPort) await this.save({...this.state,mixedPort});
       this.applyProxyEnv();
+      await this.publishUpstream();
       try {
         // Never leave the Host on a proxy that cannot carry its own traffic.
         await (this.probeImpl ?? (sig => this.probe(sig)))(signal);

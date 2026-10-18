@@ -51,7 +51,7 @@ test('imports nodes, neutralising dangerous top-level subscription settings',()=
   const conf = assemble(parsed.raw, parsed.nodes, { dns: parsed.dns, selected: parsed.nodes[0].name });
   assert.equal(conf.tun.enable,false);assert.equal(conf.dns.enable,false);assert.equal(conf['allow-lan'],false);
   assert.equal(conf['bind-address'],'127.0.0.1');assert.equal(conf['external-controller'],'127.0.0.1:30002');
-  assert.deepEqual(conf.authentication,['dsh:password']);assert.deepEqual(conf['skip-auth-prefixes'],[]);
+  assert.deepEqual(conf.authentication,['dsh:password']);assert.deepEqual(conf['skip-auth-prefixes'],['127.0.0.1/32','::1/128']);
   assert.deepEqual(conf.rules.slice(UPSTREAM_HOSTS.length,UPSTREAM_HOSTS.length+PRIORITY_RULES.length),PRIORITY_RULES);
   assert.equal(conf.rules[0],'DOMAIN-SUFFIX,chatgpt.com,DSH');
   assert.equal(conf.rules.at(-1),'MATCH,DSH');

@@ -123,7 +123,10 @@ test('the plugin owns ports, authentication and routing mode regardless of the d
   assert.equal(config['external-controller'], '127.0.0.1:12072');
   assert.equal(config.secret, 'api-secret');
   assert.deepEqual(config.authentication, ['dsh:inbound-secret']);
-  assert.deepEqual(config['skip-auth-prefixes'], []);
+  // Loopback only: the listener is bound to 127.0.0.1 with allow-lan off, and a
+  // bare proxy URL (environment export, another plugin's upstream setting) cannot
+  // carry the inbound account.
+  assert.deepEqual(config['skip-auth-prefixes'], ['127.0.0.1/32', '::1/128']);
   assert.equal(config.mode, 'rule');
   assert.equal(config['log-level'], 'warning');
   assert.equal(config.ipv6, false);
