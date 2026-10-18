@@ -196,6 +196,26 @@ test('a provider that reports no usage is explained instead of showing an empty 
   } finally { await app.close(); }
 });
 
+test('an unreadable subscription shows the saved plan snapshot instead of claiming nothing is published', async () => {
+  const app = await mount({
+    usage: null,
+    lastRefreshError: 'Download TLS validation failed: the subscription server certificate has expired.',
+    importInfo: { remaining: '98.79 GB', expireOn: '2026-11-11', at: '2026-10-11T13:48:11.612Z' },
+  });
+  try {
+    const { document } = app.dom.window;
+    const text = document.body.textContent;
+    assert.ok(text.includes('usageImportFallback'), 'the card explains that the figure is not live');
+    assert.ok(text.includes('98.79 GB'), 'the traffic left at the last import is shown');
+    assert.ok(text.includes('2026-11-11'), 'the expiry date from the same snapshot is shown');
+    assert.ok(text.includes('usageSnapshotAt'), 'the snapshot is labelled with its time');
+    assert.ok(!text.includes('usageUnknown'), 'a failed download must not be reported as a silent provider');
+    assert.equal(document.querySelector('.dsh-mh-usage-bar'), null, 'no quota bar is invented from a text snapshot');
+    const alert = document.querySelector('[role="alert"]');
+    assert.ok(alert && alert.textContent.includes('certificate has expired'), 'the real reason stays visible');
+  } finally { await app.close(); }
+});
+
 test('a provider that states no total quota is never drawn as a completed bar', async () => {
   // `total=0` means "not stated", so it must not render as 0 used of 0, or as a full red bar.
   const app = await mount({ usage: { upload: 10, download: 20, used: 30, total: null, remaining: null, percentUsed: null, expire: null, expiresAt: null, daysLeft: null, expired: false, readAt: '2026-10-13T00:00:00.000Z' } });

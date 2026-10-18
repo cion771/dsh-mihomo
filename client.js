@@ -29,6 +29,8 @@ window.__ModuleLoader__.load({
         usageNoExpire:'服务商未提供到期时间', usageExpired:'已过期', usageDaysLeft:'剩 {n} 天', usagePercent:'已用 {n}%', usageUnlimited:'服务商未提供总额度',
         usageUnknown:'服务商没有在订阅里提供流量信息（subscription-userinfo）。是否显示用量由服务商决定，本插件无法自行推算。',
         usageNoSubscription:'先导入订阅地址，才能查询用量。', usageCheck:'查询剩余流量',
+        usageImportFallback:'读不到实时用量（原因见下方提示），下面是服务商写在订阅里、上次导入时保存的套餐信息。',
+        usageSnapshotAt:'快照时间：{t}，之后可能已经变化。',
         usageStale:'以上是上次读取的结果，点“查询剩余流量”可更新。',
         autoRefreshTitle:'自动更新订阅', autoRefreshOff:'关闭', autoRefreshOffHint:'只在手动点击时更新',
         autoRefreshEvery:'每 {n} 小时', autoRefreshHint:'到期自动重新下载订阅',
@@ -59,6 +61,8 @@ window.__ModuleLoader__.load({
         usageNoExpire:'The provider did not state an expiry', usageExpired:'expired', usageDaysLeft:'{n} days left', usagePercent:'{n}% used', usageUnlimited:'the provider stated no total quota',
         usageUnknown:'This provider does not publish traffic information in the subscription (subscription-userinfo). Whether usage appears at all is the provider’s choice; the plugin cannot derive it.',
         usageNoSubscription:'Import a subscription URL before usage can be read.', usageCheck:'Read remaining traffic',
+        usageImportFallback:'Live usage cannot be read right now (the reason is shown below). These are the plan details the provider wrote into the subscription, saved at the last import.',
+        usageSnapshotAt:'Snapshot taken {t}; it may have changed since.',
         usageStale:'This is the last reading; use “Read remaining traffic” to update it.',
         autoRefreshTitle:'Automatic subscription refresh', autoRefreshOff:'Off', autoRefreshOffHint:'Refresh manually only',
         autoRefreshEvery:'Every {n} h', autoRefreshHint:'Re-download the subscription when due',
@@ -274,7 +278,13 @@ window.__ModuleLoader__.load({
               !state?.subscriptionConfigured
                 ? h('p',null,t('usageNoSubscription'))
                 : !usage
-                  ? h('p',null,t('usageUnknown'))
+                  ? state?.importInfo
+                    ? h(React.Fragment,null,
+                        h('p',null,t('usageImportFallback')),
+                        state.importInfo.remaining&&h('p',null,h('strong',null,`${t('usageRemaining')}: `),h('span',{className:'dsh-mh-usage-num'},state.importInfo.remaining)),
+                        state.importInfo.expireOn&&h('p',null,h('strong',null,`${t('usageExpire')}: `),state.importInfo.expireOn),
+                        state.importInfo.at&&h('small',null,t('usageSnapshotAt').replace('{t}',new Date(state.importInfo.at).toLocaleString())))
+                    : h('p',null,t('usageUnknown'))
                   : h(React.Fragment,null,
                       h('div',{className:'dsh-mh-usage-bar',role:'progressbar','aria-label':t('usageTitle'),'aria-valuemin':0,'aria-valuemax':100,...(typeof usage.percentUsed==='number'?{'aria-valuenow':usage.percentUsed}:{})},
                         h('div',{className:'dsh-mh-usage-fill'+(usage.percentUsed>=90?' dsh-mh-usage-high':''),style:{width:`${usage.percentUsed??0}%`}})),

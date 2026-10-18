@@ -8,7 +8,7 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { Agent, Pool, ProxyAgent, fetch as httpFetch, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 import { unzipSync } from 'fflate';
 import { normalizeTimeZone } from './timezone.js';
-import { GROUP, CORE_VERSION, MAX_CONFIG_BYTES, isLocalHost, parseSubscription, parseSubscriptionMeta, parseNodes, sanitizeDns, validateSubscriptionUrl, controlledConfig, encodeConfig, coreEnvironment, redactLog } from './policy.js';
+import { GROUP, CORE_VERSION, MAX_CONFIG_BYTES, isLocalHost, parseSubscription, parseSubscriptionMeta, parseImportInfo, parseNodes, sanitizeDns, validateSubscriptionUrl, controlledConfig, encodeConfig, coreEnvironment, redactLog } from './policy.js';
 
 const MAX_ARCHIVE = 48 * 1024 * 1024;
 const MAX_EXE = 100 * 1024 * 1024;
@@ -84,6 +84,15 @@ function normalizeTimestamp(value) {
   return typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? new Date(value).toISOString() : null;
 }
 
+/** The import-time plan snapshot: text the provider baked into node names, kept only as a fallback. */
+function normalizeImportInfo(value) {
+  if (!value || typeof value !== 'object') return null;
+  const remaining = typeof value.remaining === 'string' ? value.remaining.slice(0, 24) : null;
+  const expireOn = typeof value.expireOn === 'string' ? value.expireOn.slice(0, 10) : null;
+  const at = normalizeTimestamp(value.at);
+  return remaining === null && expireOn === null ? null : { remaining, expireOn, at };
+}
+
 /** 0 disables automatic refresh; anything else is a whole number of hours within a month. */
 export function normalizeRefreshHours(value) {
   return Number.isInteger(value) && value >= 0 && value <= 720 ? value : 0;
@@ -118,7 +127,7 @@ export class MihomoController {
     this.spawn = options.spawn ?? spawn;
     this.ports = options.reservePorts ?? reservePorts;
     this.probeImpl = options.probe;
-    this.state = { timeZone: null, autoStart: false, subscriptionUrl: '', nodes: [], dns: null, insecureTls: 0, selected: '', updatedAt: null, userInfo: null, userInfoAt: null, autoRefreshHours: 0, lastRefreshAt: null, lastRefreshErrorAt: null, lastRefreshError: null };
+    this.state = { timeZone: null, autoStart: false, subscriptionUrl: '', nodes: [], dns: null, insecureTls: 0, selected: '', updatedAt: null, userInfo: null, userInfoAt: null, importInfo: null, autoRefreshHours: 0, lastRefreshAt: null, lastRefreshErrorAt: null, lastRefreshError: null };
     this.kernel = null;
     this.phase = 'stopped'; this.error = null;
     this.child = null; this.session = null; this.dispatcher = null; this.logStream = null;
@@ -135,6 +144,11 @@ export class MihomoController {
       if (stat.size > MAX_CONFIG_BYTES * 2) throw new Error('Saved state exceeds the limit.');
       const stored = JSON.parse(await fs.readFile(this.file('state.json'),'utf8'));
       const nodes = stored.nodes?.length ? parseNodes(encodeConfig({proxies:stored.nodes})) : [];
+      // Older state files predate the snapshot field, so recover it from the node names that were
+      // saved with them: otherwise an already-imported plan would stay invisible until the next
+      // successful download, which is exactly what an unreachable subscription prevents.
+      const recovered = normalizeImportInfo(stored.importInfo)
+        ?? (parseImportInfo(nodes) ? { ...parseImportInfo(nodes), at: normalizeTimestamp(stored.updatedAt) } : null);
       this.state = {
         timeZone: normalizeTimeZone(stored.timeZone ?? ''),
         autoStart: stored.autoStart === true,
@@ -146,6 +160,7 @@ export class MihomoController {
         updatedAt: typeof stored.updatedAt === 'string' ? stored.updatedAt : null,
         userInfo: normalizeUserInfo(stored.userInfo),
         userInfoAt: normalizeTimestamp(stored.userInfoAt),
+        importInfo: recovered,
         autoRefreshHours: normalizeRefreshHours(stored.autoRefreshHours),
         lastRefreshAt: normalizeTimestamp(stored.lastRefreshAt),
         lastRefreshErrorAt: normalizeTimestamp(stored.lastRefreshErrorAt),
@@ -258,6 +273,7 @@ export class MihomoController {
       autoStart: this.state.autoStart,
       subscriptionConfigured: !!this.state.subscriptionUrl,
       usage: this.usageView(),
+      importInfo: this.state.importInfo,
       autoRefreshHours: this.state.autoRefreshHours,
       lastRefreshAt: this.state.lastRefreshAt,
       nextRefreshAt: this.nextRefreshAt(),
@@ -488,6 +504,7 @@ export class MihomoController {
     const parsed = parseSubscription(text);
     const previousSelection = this.state.selected;
     const updatedAt = new Date().toISOString();
+    const importInfo = parseImportInfo(parsed.nodes);
     const next = {
       ...this.state,
       nodes: parsed.nodes,
@@ -496,6 +513,7 @@ export class MihomoController {
       subscriptionUrl: url,
       selected: parsed.nodes.some(n => n.name === previousSelection) ? previousSelection : parsed.nodes[0].name,
       updatedAt,
+      importInfo: importInfo ? { ...importInfo, at: updatedAt } : null,
     };
     if (url) {
       next.lastRefreshAt = updatedAt;

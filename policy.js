@@ -176,6 +176,35 @@ export function parseSubscriptionMeta(text, headers) {
 // user's own region, so routing it through a foreign node costs a full extra round trip on every
 // request (measured +250 ms on an IEPL line) and lets an overseas exit be throttled or rejected
 // for no benefit. Loopback and private ranges are never remote either.
+const REMAINING_IN_NAME = /剩余流量\s*[:：]\s*(\d+(?:\.\d+)?\s*(?:[KMGT]i?B|B))/i;
+const EXPIRE_IN_NAME = /(?:套餐)?到期\s*[:：]\s*(\d{4}-\d{2}-\d{2})/;
+
+/**
+ * Several providers (including this one) publish the plan inside the subscription as fake nodes
+ * named "剩余流量：98.79 GB" and "套餐到期：2026-11-11". Those names survive every import, so they
+ * are the only usage figure available while the subscription itself cannot be downloaded. The
+ * value is a snapshot taken at import time and is never presented as live.
+ */
+export function parseImportInfo(nodes) {
+  if (!Array.isArray(nodes)) return null;
+  let remaining = null;
+  let expireOn = null;
+  for (const node of nodes) {
+    const name = typeof node?.name === 'string' ? node.name : '';
+    if (!name) continue;
+    if (remaining === null) {
+      const found = REMAINING_IN_NAME.exec(name);
+      if (found) remaining = found[1].replace(/\s+/g, ' ');
+    }
+    if (expireOn === null) {
+      const found = EXPIRE_IN_NAME.exec(name);
+      if (found) expireOn = found[1];
+    }
+    if (remaining !== null && expireOn !== null) break;
+  }
+  return remaining === null && expireOn === null ? null : { remaining, expireOn };
+}
+
 export const DIRECT_RULES = [
   'DOMAIN-SUFFIX,deepseek.com,DIRECT',
   'DOMAIN-SUFFIX,cn,DIRECT',

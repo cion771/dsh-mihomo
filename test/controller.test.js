@@ -424,3 +424,23 @@ test('autostart stops after two attempts and keeps the failure visible',async()=
     assert.equal(controller.status().phase,'error','the panel still shows the problem');
   }finally{await controller.dispose();await fs.rm(dir,{recursive:true,force:true});}
 });
+
+test('a state file written before this feature still reports the saved plan',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-mihomo-backfill-'));
+  try{
+    const legacy={
+      timeZone:null,autoStart:false,subscriptionUrl:'https://example.com/sub',
+      nodes:[{name:'剩余流量：98.79 GB',type:'socks5',server:'a.example',port:1080},
+             {name:'套餐到期：2026-11-11',type:'socks5',server:'a.example',port:1081}],
+      dns:null,insecureTls:0,selected:'剩余流量：98.79 GB',updatedAt:'2026-10-11T13:48:11.612Z',
+      autoRefreshHours:0,lastRefreshAt:null,lastRefreshErrorAt:null,lastRefreshError:null,
+    };
+    await fs.writeFile(path.join(dir,'state.json'),JSON.stringify(legacy));
+    const controller=await new MihomoController(dir,{fetch:async()=>new Response('{}')}).init();
+    try{
+      assert.deepEqual(controller.status().importInfo,
+        {remaining:'98.79 GB',expireOn:'2026-11-11',at:'2026-10-11T13:48:11.612Z'},
+        'the plan is recovered from node names so it is visible without a fresh download');
+    }finally{await controller.dispose();}
+  }finally{await fs.rm(dir,{recursive:true,force:true});}
+});

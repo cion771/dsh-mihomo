@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseNodes, parseSubscription, controlledConfig, DIRECT_RULES, sanitizeDns, isLocalHost, coreEnvironment, validateSubscriptionUrl, redactLog, parseUserInfo, parseSubscriptionMeta } from '../policy.js';
+import { parseNodes, parseSubscription, controlledConfig, DIRECT_RULES, sanitizeDns, isLocalHost, coreEnvironment, validateSubscriptionUrl, redactLog, parseUserInfo, parseSubscriptionMeta, parseImportInfo } from '../policy.js';
 const fixture = 'proxies:\n  - name: example\n    type: socks5\n    server: example.com\n    port: 443\n';
 
 test('provider usage lines are read in the shapes providers actually send',()=>{
@@ -149,4 +149,22 @@ test('log redaction removes endpoints and tokens before text leaves the Host',()
   const out = redactLog(line);
   assert.ok(!out.includes('sailing.example'));
   assert.ok(!out.includes('11111111-2222-3333-4444-555555555555'));
+});
+
+test('the plan a provider writes into node names is readable without downloading it again',()=>{
+  const nodes = [
+    { name: '剩余流量：98.79 GB', type: 'vless', server: 'info.example', port: 1 },
+    { name: '套餐到期：2026-11-11', type: 'vless', server: 'info.example', port: 2 },
+    { name: 'JP日本 01 | IEPL', type: 'vless', server: 'jp.example', port: 443 },
+  ];
+  assert.deepEqual(parseImportInfo(nodes), { remaining: '98.79 GB', expireOn: '2026-11-11' });
+  // Chinese colon, missing space and a half-width colon are all seen in the wild.
+  assert.deepEqual(parseImportInfo([{ name: '剩余流量:1.5TB' }, { name: '到期：2027-01-02' }]),
+    { remaining: '1.5TB', expireOn: '2027-01-02' });
+  // Only one of the two facts is enough to be worth showing.
+  assert.deepEqual(parseImportInfo([{ name: '剩余流量：12 GB' }]), { remaining: '12 GB', expireOn: null });
+  // Ordinary node names must never be mistaken for a plan.
+  assert.equal(parseImportInfo([{ name: 'JP日本 01 | IEPL' }, { name: 'HK 02' }]), null);
+  assert.equal(parseImportInfo([]), null);
+  assert.equal(parseImportInfo(null), null);
 });
