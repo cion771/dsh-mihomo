@@ -32,6 +32,9 @@ window.__ModuleLoader__.load({
         usageImportFallback:'读不到实时用量（原因见下方提示），下面是服务商写在订阅里、上次导入时保存的套餐信息。',
         usageSnapshotAt:'快照时间：{t}，之后可能已经变化。',
         usageStale:'以上是上次读取的结果，点“查询剩余流量”可更新。',
+        trafficTitle:'实时流量', trafficNeedStart:'启动代理后才会读取实时流量。', trafficNoData:'还没有读到流量。',
+        trafficRate:'当前下载速率', trafficActive:'活动连接', trafficIdle:'当前没有活动连接。',
+        trafficNote:'每 2.5 秒读取一次本机内核的统计；连接内容只显示在这个面板里，不会发送到任何地方，也不写入日志。',
         autoRefreshTitle:'自动更新订阅', autoRefreshOff:'关闭', autoRefreshOffHint:'只在手动点击时更新',
         autoRefreshEvery:'每 {n} 小时', autoRefreshHint:'到期自动重新下载订阅',
         autoRefreshNext:'下次自动更新：{t}', autoRefreshFailed:'上次自动更新失败：',
@@ -64,6 +67,9 @@ window.__ModuleLoader__.load({
         usageImportFallback:'Live usage cannot be read right now (the reason is shown below). These are the plan details the provider wrote into the subscription, saved at the last import.',
         usageSnapshotAt:'Snapshot taken {t}; it may have changed since.',
         usageStale:'This is the last reading; use “Read remaining traffic” to update it.',
+        trafficTitle:'Live traffic', trafficNeedStart:'Start the proxy to read live traffic.', trafficNoData:'No traffic has been read yet.',
+        trafficRate:'Current download rate', trafficActive:'Active connections', trafficIdle:'No active connections right now.',
+        trafficNote:'Read from the local core every 2.5 seconds; what appears here stays in this panel — nothing is sent anywhere and nothing is logged.',
         autoRefreshTitle:'Automatic subscription refresh', autoRefreshOff:'Off', autoRefreshOffHint:'Refresh manually only',
         autoRefreshEvery:'Every {n} h', autoRefreshHint:'Re-download the subscription when due',
         autoRefreshNext:'Next automatic refresh: {t}', autoRefreshFailed:'Last automatic refresh failed:',
@@ -110,6 +116,9 @@ window.__ModuleLoader__.load({
           const [highlight,setHighlight] = React.useState(0);
           const [latencies,setLatencies] = React.useState({});
           const [testing,setTesting] = React.useState(false);
+          const [live,setLive] = React.useState(null);
+          const [liveError,setLiveError] = React.useState('');
+          const liveBasis = React.useRef(null);
           const pickerRef = React.useRef(null);
           const listRef = React.useRef(null);
           const mounted = React.useRef(true);
@@ -137,6 +146,32 @@ window.__ModuleLoader__.load({
             listRef.current?.focus();
             return () => document.removeEventListener('mousedown',onPointerDown);
           },[open]);
+          // Live traffic is polled only while it can be useful. The core already keeps the counters,
+          // so the current rate is the difference between two reads rather than a sampler of ours,
+          // and nothing is sent anywhere: this reads loopback and renders what it gets.
+          React.useEffect(() => {
+            if (!state?.running) { setLive(null); liveBasis.current = null; return undefined; }
+            let stopped = false;
+            const read = async () => {
+              try {
+                const value = await call({action:'traffic'});
+                if (stopped || !mounted.current) return;
+                const now = Date.now();
+                const previous = liveBasis.current;
+                const rate = previous && now > previous.at
+                  ? Math.max(0,(value.down - previous.down) / ((now - previous.at) / 1000))
+                  : null;
+                liveBasis.current = { at: now, down: value.down };
+                setLive({ ...value, rate });
+                setLiveError('');
+              } catch (err) {
+                if (!stopped && mounted.current) setLiveError(err.message);
+              }
+            };
+            read();
+            const timer = setInterval(() => { if (document.visibilityState !== 'hidden') read(); },2500);
+            return () => { stopped = true; clearInterval(timer); };
+          },[state?.running]);
           async function action(args) {
             if (busy) return;
             setBusy(true);setError('');setNotice('');
@@ -211,7 +246,7 @@ window.__ModuleLoader__.load({
             // The node list is drawn by this plugin: a native option popup cannot be
             // themed reliably, and its highlight made the selected node unreadable.
             h('style',null,'.dsh-mh-picker{position:relative}.dsh-mh-trigger{width:100%;display:flex;align-items:center;gap:10px;text-align:left}.dsh-mh-trigger-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dsh-mh-caret{color:var(--dsw-alias-label-secondary)}.dsh-mh-list{margin:8px 0 0;padding:4px;list-style:none;max-height:280px;overflow:auto;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);border-radius:10px}.dsh-mh-list:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}.dsh-mh-option{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:7px;cursor:pointer;border-left:3px solid transparent}.dsh-mh-option-highlight{background:var(--dsw-alias-bg-layer-2)}.dsh-mh-option-active{border-left-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2);font-weight:600}.dsh-mh-option-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dsh-mh-option-meta{color:var(--dsw-alias-label-secondary);font-size:12px}.dsh-mh-lat{font-variant-numeric:tabular-nums;font-size:12px;color:var(--dsw-alias-label-secondary);min-width:56px;text-align:right}.dsh-mh-lat-good{color:var(--dsw-alias-state-success-primary)}.dsh-mh-lat-slow{color:var(--dsw-alias-state-warn-primary)}.dsh-mh-lat-bad{color:var(--dsw-alias-state-error-primary)}.dsh-mh button:disabled{opacity:.55}'),
-            h('style',null,'.dsh-mh-zone-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:8px;margin-top:14px}.dsh-mh .dsh-mh-zone{display:flex;flex-direction:column;align-items:flex-start;min-height:60px;text-align:left;padding:9px 11px}.dsh-mh-zone-name{font-weight:600}.dsh-mh-zone-id{color:var(--dsw-alias-label-secondary);font-size:11px;overflow-wrap:anywhere}.dsh-mh .dsh-mh-zone-active{border-color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 20%,var(--dsw-alias-bg-layer-2))}.dsh-mh-timezone-advanced{margin-top:14px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:10px}.dsh-mh-timezone-advanced summary{cursor:pointer;color:var(--dsw-alias-label-secondary)}.dsh-mh-usage-bar{height:8px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden;margin:4px 0 12px}.dsh-mh-usage-fill{height:100%;border-radius:999px;background:var(--dsw-alias-brand-primary)}.dsh-mh-usage-high{background:var(--dsw-alias-state-error-primary)}.dsh-mh-usage-num{font-variant-numeric:tabular-nums}'),
+            h('style',null,'.dsh-mh-zone-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:8px;margin-top:14px}.dsh-mh .dsh-mh-zone{display:flex;flex-direction:column;align-items:flex-start;min-height:60px;text-align:left;padding:9px 11px}.dsh-mh-zone-name{font-weight:600}.dsh-mh-zone-id{color:var(--dsw-alias-label-secondary);font-size:11px;overflow-wrap:anywhere}.dsh-mh .dsh-mh-zone-active{border-color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 20%,var(--dsw-alias-bg-layer-2))}.dsh-mh-timezone-advanced{margin-top:14px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:10px}.dsh-mh-timezone-advanced summary{cursor:pointer;color:var(--dsw-alias-label-secondary)}.dsh-mh-usage-bar{height:8px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden;margin:4px 0 12px}.dsh-mh-usage-fill{height:100%;border-radius:999px;background:var(--dsw-alias-brand-primary)}.dsh-mh-usage-high{background:var(--dsw-alias-state-error-primary)}.dsh-mh-usage-num{font-variant-numeric:tabular-nums}.dsh-mh-live{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:4px}.dsh-mh-live li{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:baseline;font-size:12px}.dsh-mh-live-host{overflow-wrap:anywhere}.dsh-mh-live-chain{color:var(--dsw-alias-label-secondary);font-size:11px;max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'),
             h('h2',null,t('title')),h('p',null,t('intro')),
             h('div',{className:'dsh-mh-notice'},t('scope')),
             h('div',{className:'dsh-mh-card'},
@@ -304,6 +339,21 @@ window.__ModuleLoader__.load({
               refreshHours>0&&state?.nextRefreshAt&&h('small',null,t('autoRefreshNext').replace('{t}',new Date(state.nextRefreshAt).toLocaleString())),
               state?.lastRefreshError&&h('div',{className:'dsh-mh-notice',role:'alert'},h('strong',null,t('autoRefreshFailed')),' ',state.lastRefreshError),
               h('small',null,t('autoRefreshNote'))),
+            h('div',{className:'dsh-mh-card'},h('h3',null,t('trafficTitle')),
+              !isOn?h('p',null,t('trafficNeedStart'))
+              :liveError?h('div',{className:'dsh-mh-notice',role:'alert'},liveError)
+              :!live?h('p',null,t('trafficNoData'))
+              :h('div',null,
+                h('p',{className:'dsh-mh-usage-num'},h('strong',null,`↓ ${bytes(live.down)}`),'　',h('strong',null,`↑ ${bytes(live.up)}`)),
+                h('p',null,`${t('trafficRate')}: ${typeof live.rate==='number'?bytes(live.rate)+'/s':'—'}`),
+                h('p',null,`${t('trafficActive')}: ${live.active}`),
+                (live.connections??[]).length
+                  ? h('ul',{className:'dsh-mh-live'},(live.connections??[]).slice(0,6).map((item,index)=>h('li',{key:index},
+                      h('span',{className:'dsh-mh-live-host'},item.host||t('missing')),
+                      h('span',{className:'dsh-mh-live-chain'},item.chain.length?item.chain.join(' › '):(item.rule||'')),
+                      h('span',{className:'dsh-mh-usage-num'},bytes(item.download+item.upload)))))
+                  : h('p',null,t('trafficIdle')),
+                h('small',null,t('trafficNote')))),
             busy&&h('div',{className:'dsh-mh-notice',role:'status'},t('busy')),
             notice&&h('div',{className:'dsh-mh-notice',role:'status'},notice),
             (error||state?.error)&&h('div',{className:'dsh-mh-notice',role:'alert'},error||state.error),

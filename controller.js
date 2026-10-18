@@ -8,15 +8,30 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { Agent, Pool, ProxyAgent, fetch as httpFetch, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 import { unzipSync } from 'fflate';
 import { normalizeTimeZone } from './timezone.js';
-import { GROUP, CORE_VERSION, MAX_CONFIG_BYTES, isLocalHost, parseSubscription, parseSubscriptionMeta, parseImportInfo, parseNodes, sanitizeDns, validateSubscriptionUrl, controlledConfig, encodeConfig, coreEnvironment, redactLog } from './policy.js';
+import { GROUP, CORE_VERSION, MAX_CONFIG_BYTES, isLocalHost, parseSubscription, parseSubscriptionMeta, parseImportInfo, parseNodes, sanitizeDns, validateSubscriptionUrl, encodeConfig, coreEnvironment, redactLog } from './policy.js';
+import { assembleConfig } from './config.js';
 
 const MAX_ARCHIVE = 48 * 1024 * 1024;
 const MAX_EXE = 100 * 1024 * 1024;
 /** Neutral reachability targets; a provider may block one, so any success counts. */
 const PROBE_URLS = ['http://www.gstatic.com/generate_204', 'http://cp.cloudflare.com/generate_204', 'http://www.msftconnecttest.com/connecttest.txt'];
+/** Connections reported back to the panel; the list is a snapshot, not an archive. */
+const MAX_LIVE_CONNECTIONS = 40;
 const RELEASE_HOSTS = new Set(['api.github.com','github.com','release-assets.githubusercontent.com','objects.githubusercontent.com','github-releases.githubusercontent.com']);
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const token = () => randomBytes(24).toString('hex');
+
+/**
+ * The inherited subscription document is re-read from state.json on every start,
+ * so it is validated like any other stored input: a plain object of bounded size,
+ * never a value that would make the core load something we did not inspect.
+ */
+function recoverRaw(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  try {
+    return JSON.stringify(raw).length > MAX_CONFIG_BYTES ? null : raw;
+  } catch { return null; }
+}
 
 async function safeDirectory(dir) {
   const full = path.resolve(dir);
@@ -127,17 +142,42 @@ export class MihomoController {
     this.spawn = options.spawn ?? spawn;
     this.ports = options.reservePorts ?? reservePorts;
     this.probeImpl = options.probe;
-    this.state = { timeZone: null, autoStart: false, subscriptionUrl: '', nodes: [], dns: null, insecureTls: 0, selected: '', updatedAt: null, userInfo: null, userInfoAt: null, importInfo: null, autoRefreshHours: 0, lastRefreshAt: null, lastRefreshErrorAt: null, lastRefreshError: null };
+    this.state = { timeZone: null, autoStart: false, subscriptionUrl: '', nodes: [], raw: null, dns: null, insecureTls: 0, selected: '', updatedAt: null, userInfo: null, userInfoAt: null, importInfo: null, autoRefreshHours: 0, lastRefreshAt: null, lastRefreshErrorAt: null, lastRefreshError: null };
     this.kernel = null;
     this.phase = 'stopped'; this.error = null;
     this.child = null; this.session = null; this.dispatcher = null; this.logStream = null;
     this.queue = Promise.resolve(); this.disposed = false;
     this.refreshTimer = null; this.refreshing = false;
+    this.report = null;
   }
   file(name) { return path.join(this.dataDir,name); }
 
+  /**
+   * Assemble the document the core serves: the subscription's own routing and
+   * groups, with the keys the plugin owns (ports, controller secret, inbound
+   * authentication, TUN) overwritten. `report` records what was inherited and
+   * what had to be dropped so the panel can say so instead of guessing.
+   */
+  managedConfig(state = this.state, session = this.session) {
+    if (!session) throw new Error('The proxy has not reserved ports yet.');
+    const { config, report } = assembleConfig({
+      raw: state.raw,
+      nodes: state.nodes,
+      mixedPort: session.mixedPort,
+      apiPort: session.apiPort,
+      apiSecret: session.apiSecret,
+      proxyPassword: session.proxyPassword,
+      providerRoot: this.file('providers'),
+      dns: state.dns,
+      selected: state.selected,
+    });
+    this.report = report;
+    return config;
+  }
+
   async init() {
     await safeDirectory(this.dataDir);
+    await safeDirectory(path.join(this.dataDir,'providers'));
     for (const name of ['state.json','kernel.json','mihomo.exe','managed.yaml']) await safeFile(this.file(name));
     try {
       const stat = await fs.stat(this.file('state.json'));
@@ -154,6 +194,7 @@ export class MihomoController {
         autoStart: stored.autoStart === true,
         subscriptionUrl: stored.subscriptionUrl ? validateSubscriptionUrl(stored.subscriptionUrl) : '',
         nodes,
+        raw: recoverRaw(stored.raw),
         dns: sanitizeDns(stored.dns),
         insecureTls: nodes.filter(n => n['skip-cert-verify'] === true).length,
         selected: typeof stored.selected === 'string' ? stored.selected : '',
@@ -268,6 +309,14 @@ export class MihomoController {
       running: this.child !== null && this.child.exitCode === null && !this.child.killed,
       proxyActive: this.dispatcher !== null && getGlobalDispatcher() === this.dispatcher,
       coreInstalled: this.kernel !== null, coreVersion: this.kernel?.version ?? null,
+      inherited: this.report ? {
+        subscription: this.report.inherited,
+        groups: this.report.groups,
+        rules: this.report.rules,
+        stripped: this.report.stripped,
+        droppedGroups: this.report.droppedGroups,
+        droppedProviders: this.report.droppedProviders,
+      } : null,
       timeZone: this.state.timeZone,
       timeZoneScope: 'Model date/time interpretation in all Host sessions; not browser/system clocks or saved reminders.',
       autoStart: this.state.autoStart,
@@ -328,6 +377,7 @@ export class MihomoController {
         return this.importConfig({url:this.state.subscriptionUrl},signal);
       }
       case 'usage': return this.usage(signal);
+      case 'traffic': return this.traffic(signal);
       case 'start': return this.start(signal);
       case 'stop': await this.stop(); break;
       case 'select': await this.select(args.node,signal); break;
@@ -508,6 +558,7 @@ export class MihomoController {
     const next = {
       ...this.state,
       nodes: parsed.nodes,
+      raw: parsed.raw,
       dns: parsed.dns,
       insecureTls: parsed.insecureTls,
       subscriptionUrl: url,
@@ -533,7 +584,7 @@ export class MihomoController {
   async reloadRunning(next,signal) {
     const target = this.file('managed.yaml');
     const staging = this.file(`staging-${token()}.yaml`);
-    const config = encodeConfig(controlledConfig(next.nodes,{...this.session,selected:next.selected,dns:next.dns}));
+    const config = encodeConfig(this.managedConfig(next));
     let previous = null;
     try {
       await atomicWrite(staging,config);
@@ -585,7 +636,7 @@ export class MihomoController {
     this.phase = 'starting';
     const [mixedPort,apiPort] = await this.ports();
     this.session = {mixedPort,apiPort,apiSecret:token(),proxyPassword:token(),selected:this.state.selected};
-    await atomicWrite(this.file('managed.yaml'),encodeConfig(controlledConfig(this.state.nodes,{...this.session,dns:this.state.dns})));
+    await atomicWrite(this.file('managed.yaml'),encodeConfig(this.managedConfig(this.state)));
     try {
       await this.execCore(this.file('mihomo.exe'),['-t','-d',this.dataDir,'-f',this.file('managed.yaml')],signal);
       signal?.throwIfAborted();
@@ -694,6 +745,36 @@ export class MihomoController {
       try { await this.save(next); }
       catch (err) { await this.api(`/proxies/${encodeURIComponent(GROUP)}`,{method:'PUT',body:JSON.stringify({name:previous})}).catch(()=>{}); throw err; }
     } else await this.save(next);
+  }
+
+  /**
+   * Live traffic, read from the core rather than counted here. The totals are cumulative for the
+   * running core, so the panel derives the current rate from two reads instead of the plugin
+   * keeping a sampler of its own; nothing is logged and no connection metadata leaves the process.
+   */
+  async traffic(signal) {
+    const payload = await this.api('/connections',{},signal);
+    const connections = Array.isArray(payload?.connections) ? payload.connections : [];
+    const live = connections
+      .filter(item => item && typeof item === 'object')
+      .map(item => ({
+        host: typeof item.metadata?.host === 'string' && item.metadata.host
+          ? item.metadata.host
+          : (typeof item.metadata?.destinationIP === 'string' ? item.metadata.destinationIP : ''),
+        chain: Array.isArray(item.chains) ? item.chains.filter(step => typeof step === 'string').slice(0,3) : [],
+        rule: typeof item.rule === 'string' ? item.rule : '',
+        download: Number(item.download) || 0,
+        upload: Number(item.upload) || 0,
+      }))
+      .sort((a,b) => (b.download + b.upload) - (a.download + a.upload))
+      .slice(0, MAX_LIVE_CONNECTIONS);
+    return {
+      up: Number(payload?.uploadTotal) || 0,
+      down: Number(payload?.downloadTotal) || 0,
+      active: connections.length,
+      at: new Date().toISOString(),
+      connections: live,
+    };
   }
 
   async test(signal) {

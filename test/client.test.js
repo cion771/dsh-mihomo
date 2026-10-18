@@ -30,12 +30,18 @@ async function mount(overrides = {}) {
 
   const requests = [];
   let currentStatus = { ...STATUS, ...overrides };
+  let trafficReads = 0;
   const fetchImpl = async (_url, init) => {
     const body = JSON.parse(init.body);
     requests.push(body);
     if (body.action === 'select') currentStatus = { ...currentStatus, selected: body.node };
     if (body.action === 'configure' && Object.hasOwn(body, 'timeZone')) currentStatus = { ...currentStatus, timeZone: body.timeZone || null };
     if (body.action === 'configure' && Object.hasOwn(body, 'autoRefreshHours')) currentStatus = { ...currentStatus, autoRefreshHours: body.autoRefreshHours, nextRefreshAt: body.autoRefreshHours ? currentStatus.nextRefreshAt : null };
+    if (body.action === 'traffic') {
+      trafficReads += 1;
+      const result = { up: 2048, down: 4096 * trafficReads, active: 1, at: 'now', connections: [{ host: 'api.deepseek.com', chain: ['DIRECT'], rule: 'Match', download: 1024, upload: 512 }] };
+      return { json: async () => ({ ok: true, result }) };
+    }
     const result = body.action === 'latency'
       ? { results: currentStatus.nodes.map((n, i) => ({ name: n.name, delayMs: 100 * (i + 1) })), testedAt: 'now', state: currentStatus }
       : currentStatus;
@@ -229,6 +235,26 @@ test('a provider that states no total quota is never drawn as a completed bar', 
     assert.ok(text.includes('usageUnlimited'), 'the missing quota is stated');
     assert.ok(text.includes('usageNoExpire'), 'the missing expiry is stated');
     assert.equal(text.includes('usageRemaining'), false, 'no remaining line is invented without a total');
+  } finally { await app.close(); }
+});
+
+test('live traffic is read from the local core and shown with its exit', async () => {
+  const app = await mount();
+  try {
+    await act(async () => {});
+    const { document } = app.dom.window;
+    assert.ok(app.requests.some(r => r.action === 'traffic'), 'the panel asks the Host for the core counters');
+    assert.ok(document.body.textContent.includes('api.deepseek.com'), 'the busiest connection is listed');
+    assert.ok(document.body.textContent.includes('DIRECT'), 'and the exit it used');
+    assert.ok(document.querySelector('.dsh-mh-live'), 'the connection list renders');
+  } finally { await app.close(); }
+});
+
+test('a stopped proxy is not polled for traffic', async () => {
+  const app = await mount({ running: false, proxyActive: false });
+  try {
+    await act(async () => {});
+    assert.equal(app.requests.some(r => r.action === 'traffic'), false, 'nothing is polled while the proxy is off');
   } finally { await app.close(); }
 });
 

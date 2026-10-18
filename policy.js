@@ -110,7 +110,7 @@ export function parseSubscription(text) {
     names.add(node.name);
     return node;
   });
-  return { nodes, dns: sanitizeDns(data?.dns), insecureTls: nodes.filter(n => n['skip-cert-verify'] === true).length };
+  return { nodes, dns: sanitizeDns(data?.dns), insecureTls: nodes.filter(n => n['skip-cert-verify'] === true).length, raw: Array.isArray(data) ? { proxies: data } : (data && typeof data === 'object' ? data : null) };
 }
 
 export function parseNodes(text) { return parseSubscription(text).nodes; }
@@ -203,34 +203,6 @@ export function parseImportInfo(nodes) {
     if (remaining !== null && expireOn !== null) break;
   }
   return remaining === null && expireOn === null ? null : { remaining, expireOn };
-}
-
-export const DIRECT_RULES = [
-  'DOMAIN-SUFFIX,deepseek.com,DIRECT',
-  'DOMAIN-SUFFIX,cn,DIRECT',
-  'DOMAIN-SUFFIX,localhost,DIRECT',
-  'IP-CIDR,127.0.0.0/8,DIRECT,no-resolve',
-  'IP-CIDR,10.0.0.0/8,DIRECT,no-resolve',
-  'IP-CIDR,172.16.0.0/12,DIRECT,no-resolve',
-  'IP-CIDR,192.168.0.0/16,DIRECT,no-resolve',
-];
-
-export function controlledConfig(nodes, { mixedPort, apiPort, apiSecret, proxyPassword, selected, dns }) {
-  const names = nodes.map(n => n.name);
-  if (selected && names.includes(selected)) names.splice(names.indexOf(selected),1), names.unshift(selected);
-  return {
-    'mixed-port': mixedPort,
-    port: 0, 'socks-port': 0, 'redir-port': 0, 'tproxy-port': 0,
-    'allow-lan': false, 'bind-address': '127.0.0.1',
-    authentication: [`dsh:${proxyPassword}`], 'skip-auth-prefixes': [],
-    'external-controller': `127.0.0.1:${apiPort}`,
-    secret: apiSecret, mode: 'rule', 'log-level': 'warning', ipv6: false,
-    tun: { enable: false }, dns: dns ? { ...dns } : { enable: false, ipv6: false },
-    'profile': { 'store-selected': false, 'store-fake-ip': false },
-    proxies: nodes,
-    'proxy-groups': [{ name: GROUP, type: 'select', proxies: names }],
-    rules: [...DIRECT_RULES, `MATCH,${GROUP}`],
-  };
 }
 
 export function encodeConfig(config) { return stringify(config, { lineWidth: 0 }); }

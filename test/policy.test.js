@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseNodes, parseSubscription, controlledConfig, DIRECT_RULES, sanitizeDns, isLocalHost, coreEnvironment, validateSubscriptionUrl, redactLog, parseUserInfo, parseSubscriptionMeta, parseImportInfo } from '../policy.js';
+import { parseNodes, parseSubscription, sanitizeDns, isLocalHost, coreEnvironment, validateSubscriptionUrl, redactLog, parseUserInfo, parseSubscriptionMeta, parseImportInfo } from '../policy.js';
+import { assembleConfig, PRIORITY_RULES } from '../config.js';
+
+/** Managed document for a parsed subscription, with the values the Host would supply. */
+const assemble = (raw, nodes, extra = {}) => assembleConfig({
+  raw, nodes, mixedPort: 30001, apiPort: 30002, apiSecret: 'secret',
+  proxyPassword: 'password', providerRoot: 'C:/providers', dns: null, ...extra,
+}).config;
 const fixture = 'proxies:\n  - name: example\n    type: socks5\n    server: example.com\n    port: 443\n';
 
 test('provider usage lines are read in the shapes providers actually send',()=>{
@@ -39,19 +46,21 @@ test('subscription meta merges headers and body, with the body winning',()=>{
   assert.deepEqual(parseSubscriptionMeta('proxies: []'),{userInfo:null,updateIntervalHours:null});
 });
 
-test('imports nodes, ignoring dangerous top-level subscription settings',()=>{
-  const nodes = parseNodes(fixture+'tun:\n  enable: true\nexternal-controller: 0.0.0.0:9090\nlisteners:\n  - port: 8888\nscript: evil\n');
-  const conf = controlledConfig(nodes,{mixedPort:30001,apiPort:30002,apiSecret:'secret',proxyPassword:'password',selected:'example'});
+test('imports nodes, neutralising dangerous top-level subscription settings',()=>{
+  const parsed = parseSubscription(fixture+'tun:\n  enable: true\nexternal-controller: 0.0.0.0:9090\nlisteners:\n  - port: 8888\nscript: evil\n');
+  const conf = assemble(parsed.raw, parsed.nodes, { dns: parsed.dns, selected: parsed.nodes[0].name });
   assert.equal(conf.tun.enable,false);assert.equal(conf.dns.enable,false);assert.equal(conf['allow-lan'],false);
   assert.equal(conf['bind-address'],'127.0.0.1');assert.equal(conf['external-controller'],'127.0.0.1:30002');
   assert.deepEqual(conf.authentication,['dsh:password']);assert.deepEqual(conf['skip-auth-prefixes'],[]);
-  assert.deepEqual(conf.rules,[...DIRECT_RULES,'MATCH,DSH']);assert.equal(conf.rules.at(-1),'MATCH,DSH');
-  for(const k of ['listeners','tunnels','script','external-ui','external-controller-pipe'])assert.equal(conf[k],undefined);
+  assert.deepEqual(conf.rules.slice(0,PRIORITY_RULES.length),PRIORITY_RULES);
+  assert.equal(conf.rules.at(-1),'MATCH,DSH');
+  for(const k of ['listeners','tunnels','script'])assert.equal(conf[k],undefined);
+  assert.equal(conf['external-controller-pipe'],'');
 });
 
 test('same-region and local traffic is routed around the tunnel',()=>{
-  const nodes = parseNodes(fixture);
-  const rules = controlledConfig(nodes,{mixedPort:30001,apiPort:30002,apiSecret:'secret',proxyPassword:'password'}).rules;
+  const parsed = parseSubscription(fixture);
+  const rules = assemble(parsed.raw, parsed.nodes).rules;
   // The model API answers from the same region; tunnelling it adds a round trip and risks a
   // foreign exit being throttled, so it must match a pre-MATCH rule.
   assert.ok(rules.includes('DOMAIN-SUFFIX,deepseek.com,DIRECT'));
@@ -60,7 +69,7 @@ test('same-region and local traffic is routed around the tunnel',()=>{
   assert.equal(rules.filter(r=>r.startsWith('MATCH,')).length,1);
   assert.equal(rules.indexOf('MATCH,DSH'),rules.length-1);
   // Every exemption sorts before the catch-all, so none of them can be dead weight.
-  for(const rule of DIRECT_RULES) assert.ok(rules.indexOf(rule)<rules.indexOf('MATCH,DSH'),rule);
+  for(const rule of PRIORITY_RULES) assert.ok(rules.indexOf(rule)<rules.indexOf('MATCH,DSH'),rule);
 });
 
 test('loopback/private literals bypass, public hosts do not',()=>{
@@ -116,9 +125,9 @@ test('provider TLS and proxy-server DNS requirements survive import, unsafe part
   assert.deepEqual(dns.nameserver,['223.5.5.5']);
   assert.equal(dns['proxy-server-nameserver'].length,2);
   assert.deepEqual(Object.keys(dns['proxy-server-nameserver-policy']),['private.node']);
-  const conf = controlledConfig(nodes,{mixedPort:1,apiPort:2,apiSecret:'s',proxyPassword:'p',dns});
+  const conf = assemble(null, nodes, { dns });
   assert.equal(conf.dns.enable,true);assert.equal(conf.tun.enable,false);assert.equal(conf.listeners,undefined);
-  assert.equal(conf.script,undefined);assert.equal(conf['external-ui'],undefined);
+  assert.equal(conf.script,undefined);assert.equal(conf['external-ui'],'');
 });
 
 test('sanitizeDns refuses a DNS block that cannot resolve proxy servers',()=>{
@@ -130,7 +139,7 @@ test('sanitizeDns refuses a DNS block that cannot resolve proxy servers',()=>{
 
 test('controlled selection is persisted in group order',()=>{
   const nodes=parseNodes(fixture);nodes.push({...nodes[0],name:'second'});
-  assert.deepEqual(controlledConfig(nodes,{mixedPort:1,apiPort:2,selected:'second'} )['proxy-groups'][0].proxies,['second','example']);
+  assert.deepEqual(assemble(null, nodes, { selected:'second' })['proxy-groups'][0].proxies,['second','example']);
 });
 
 test('child environment strips hooks, overrides, path escape and proxy settings',()=>{

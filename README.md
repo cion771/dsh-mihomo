@@ -1,6 +1,6 @@
 # DSH 专用代理 / DSH-only Proxy
 
-原创的 DSH Cordis Host/Client 插件，参考 Clash Verge Rev 的“内核 + 订阅 + 节点”管理思路。没有复制该项目的代码或图标。
+原创的 DSH Cordis Host/Client 插件。配置生成流程参考 FlClash（`chen08209/FlClash`）的做法：以订阅原文为底、只覆盖插件必须掌管的键，而不是丢掉订阅自己重建一份。插件代码、界面与图标均为本项目原创，没有复制 FlClash 或 Clash Verge Rev 的代码、图标或资源；FlClash 为 GPL 项目，此处仅作设计参考。
 
 ## 使用
 
@@ -15,6 +15,7 @@
 7. **时间地区**默认使用浏览器时区。界面以“中国大陆 · 北京时间”“日本 · 东京时间”“美国西部 · 洛杉矶时间”等通俗地区卡片显示，点击即生效；不常用地区仍可在“高级设置”里输入标准 IANA 名称（如 `Asia/Tokyo`、`America/New_York`）。从下一次模型步骤开始，同一 Host 所有会话里的未限定日期/时间按该地区解释。此功能独立于代理状态，不修改 Windows、浏览器或网页时钟，也不改变真实时间流逝和已保存提醒；点击“自动（跟随浏览器）”即可关闭覆盖。
 8. **订阅用量**卡片显示服务商公布的已用/剩余流量、到期时间与读取时间；点 **查询剩余流量** 重新读取。是否提供这些数据完全由服务商决定（标准是 HTTP 响应头或正文注释里的 `subscription-userinfo`），服务商不提供时界面会明确说明“服务商没有提供”，插件无法自行推算流量。
 9. **自动更新订阅**可选 关闭 / 每 6 / 12 / 24 / 72 小时。到点自动重新下载订阅，**代理运行中同样有效**（走同一套校验后重载）；失败原因显示在该卡片里，并按同一间隔再试，不会每几分钟重试一次。间隔保存在 Host，重启 DSH 后继续生效。
+10. **实时流量**卡片在代理运行时每 2.5 秒向本机内核的 `/connections` 取一次计数：累计上行/下行、当前速率、活跃连接数，以及最忙的几条连接（目标地址、命中的规则、出口）。这些数据只在本机内核与页面之间流动，不发往服务商、也不写入状态；代理停止或页面被隐藏时停止轮询，不保留历史曲线。
 
 ## 兼容的 DSH 运行时
 
@@ -37,9 +38,11 @@
 
 ## 订阅格式和安全配置
 
-仅导入 `proxies` / `payload` 节点数组或 YAML 节点数组。导入远端节点不等于认可服务商安全：其服务器可以观察出口请求的网络元数据。请只使用信任的订阅。
+订阅需要是 Clash/Mihomo YAML，且必须含内联节点数组（`proxies` 或 `payload`）：只有 `proxy-providers`、没有任何内联节点的订阅无法导入，因为它需要额外下载，而导入前无从校验。不支持 Base64/URI 列表与自动订阅转换。地址要求 HTTPS；本地地址可以 HTTP。
 
-不支持 provider-only 配置、Base64/URI 列表、自动订阅转换、规则订阅或完整 Clash 配置保留。订阅通常需要在服务商页面选择 Clash/Mihomo 格式。地址要求 HTTPS；本地地址可以 HTTP。文件证书、代理串联、接口绑定、脚本和未知外部插件被拒绝。
+导入远端节点不等于认可服务商安全：其服务器可以观察出口请求的网络元数据。请只使用信任的订阅。
+
+从 v1.5.0 起，订阅里的 `rules`、`proxy-groups` 与 provider 会被继承（细节见下节“交给内核的配置”）；插件只接管必须由自己掌管的键，并删除能让订阅控制宿主的那部分。
 
 **订阅用量同样来自服务商。** 用量与到期时间读自响应头或正文注释里的 `subscription-userinfo`（`upload` / `download` / `total` / `expire`，单位是字节，`expire` 是 Unix 秒），正文优先于响应头；`total=0` 或 `expire=0` 表示服务商未声明，界面按“未提供”显示，而不会当成额度为零或已过期。读取用量会重新下载一次订阅（沿用同样的 HTTPS 要求与大小限制），但**不改动**已导入的节点。若服务商同时提供 `profile-update-interval`，它只作为建议值显示，用户自己选的间隔永远优先。
 
@@ -50,9 +53,17 @@
 - **DNS**：只保留解析节点地址所需的部分（`proxy-server-nameserver` 与 `proxy-server-nameserver-policy`），并把 `enhanced-mode` 固定为 `normal`。`fake-ip`、`use-hosts`、通用 `nameserver-policy` 与任何 DNS 监听仍然丢弃。
 - **TLS**：节点自带的 `skip-cert-verify` 会被保留。界面会显示有多少个节点关闭了证书校验。关闭后，到代理节点的这段 TLS 无法被验证；链路上的第三方可观察元数据（目标站点的 HTTPS 仍是端到端加密）。若你无法接受，请换用不要求该选项的服务商。
 
-生成全新受控 YAML：仅 `DSH` 选择组，loopback bind，禁止 LAN；TUN、DNS 监听及其他代理端口均关闭。订阅的 TUN、规则、监听、controller、脚本和 external-ui 等配置不会被传给内核。
+## 交给内核的配置
 
-规则是固定的 `MATCH,DSH` 之前加一组直连例外：`deepseek.com`、`.cn`、`localhost` 和私有网段。模型 API 与服务商同区，塞进境外节点只会给每个请求多加一个往返（IEPL 实测 +250 ms），还可能被境外出口限流或判风险，所以它固定直连；其余流量仍然全部经代理。
+最终写入 `managed.yaml` 的文档 = **订阅原文 + 必管键覆盖**。覆盖的键：`mixed-port`（回环 + 随机认证）、`external-controller`（127.0.0.1 + 每次启动重新生成的 secret）、`authentication`（强制存在，`skip-auth-prefixes` 清空）、`allow-lan: false`、`bind-address: 127.0.0.1`、`mode: rule`、`ipv6: false`、`log-level: warning`、`find-process-mode: off`、`geo-auto-update: false`、`profile.store-selected/-fake-ip: false`，以及 `port` / `socks-port` / `redir-port` / `tproxy-port` 归零、`tun.enable` 与 `auto-route` / `auto-detect-interface` 关闭。
+
+**整段删除**：`listeners`、`tunnels`、`iptables`、`ss-config`、`vmess-config`、`tuic-server`、`sniffer`、`hosts`、`script`、`sub-rules`、`ntp`、`geox-url`、`experimental`、`interface-name`、`routing-mark`、`captive-portal`；`external-ui`、`external-ui-url`、`external-controller-unix` / `-pipe` / `-tls` 被清空。这些都会开入站服务、绑定网卡，或让订阅把内核指向宿主上的任意路径——继承它们等于把主机交给订阅。
+
+**provider 路径被改写**到数据目录的 `providers/` 下（按 `分区/名称/URL` 的 MD5 命名），`url` 与 `interval` 保留、由内核自行更新；`type: file` 的 provider（读订阅指定的本地文件）直接丢弃，`inline` 保留。**分组会被修复**：引用了不存在节点或被丢弃 provider 的成员被移除，变空的分组整组丢弃并记入导入报告，指向被丢弃分组的规则改指 `DSH`；订阅自带的 `select` / `url-test` / `fallback` / `load-balance` / `relay` 分组原样保留，`DSH` 选择组排在最前。
+
+**规则**：订阅的 `rules`（含 `RULE-SET`）原样接在插件直连例外之后；订阅自己的 `MATCH` 会被改指 `DSH`，所以节点选择对订阅路由的流量同样生效；订阅没写 `MATCH` 时补一条 `MATCH,DSH`。例外是 `deepseek.com`、`.cn`、`localhost`、私有网段与 `::1` / `fc00::/7`：模型 API 与服务商同区，塞进境外节点只会给每个请求多加一个往返（IEPL 实测 +250 ms），还可能被境外出口限流或判风险。
+
+**没有可继承的文档时**（粘贴的 YAML、旧版本只存了节点列表），退化为纯节点配置：上述直连例外之后直接 `MATCH,DSH`。界面会在状态里说明这次是“沿用订阅规则”还是“仅节点”。
 
 启动会先验证链路：先让内核自测所选节点，再用 DSH 自己的 global fetch 实测一次。任一步失败就**自动回滚**到启动前的 dispatcher 并报出真实原因，避免把 DSH 自身的模型请求困在坏代理里。
 
@@ -91,6 +102,7 @@ UI 不回显保存的订阅地址或节点凭据，不记录到会话。`dsh_pro
 
 测试分四层：
 
+- **配置装配**（`test/config.test.js`）：继承订阅文档后仍必须是一份内核接受、宿主可控的配置——覆盖键生效、危险键被整段剥离、provider 路径被改写进数据目录、`type: file` 的 provider 被丢弃、悬空分组被修复、`MATCH` 改指 `DSH`、没有可继承文档时退化为纯节点配置。
 - **Host 策略**（`test/policy.test.js`）：节点校验、DNS 清洗、TLS 选项保留、凭证与代理环境隔离、日志脱敏，以及订阅元信息（`subscription-userinfo` / `profile-update-interval`）的解析与正文优先于响应头。
 - **Host 控制器**（`test/controller.test.js`）：真实 dispatcher 的带认证 CONNECT、本地直连、安装校验、启动回滚、延迟并发上限、时区偏好持久化，以及订阅用量读写、代理运行中的校验后热重载与失败保留原节点、自动更新的到期判定与失败退避。
 - **时间上下文**（`test/timezone.test.js`）：IANA 校验、实际 UTC 偏移换算、waterfall 决策字段保留，以及启用/关闭快照语义。
