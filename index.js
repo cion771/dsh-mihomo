@@ -17,6 +17,7 @@ export const parameters = {
     timeZone: {type:'string',description:'For configure: manual IANA zone (e.g. Asia/Tokyo or UTC) for model interpretation of unqualified dates/times in all Host sessions. Empty string disables the override. Independent of proxy state; does not change browser/system clocks or saved reminder schedules. configure requires at least autoStart, timeZone, autoRefreshHours, or insecureSubscriptionTls.'},
     autoRefreshHours: {type:'integer',minimum:0,maximum:720,description:'For configure: refresh the saved subscription every N hours while the plugin is loaded. 0 disables it. A refresh while the proxy runs is applied through a validated core config reload, so a broken subscription leaves the running proxy on its previous nodes.'},
   insecureSubscriptionTls: {type:'boolean',description:'For configure: whether a saved-subscription download may skip TLS certificate verification. Default false (verify). Enable only when the provider certificate is expired or self-signed, because it stops proving that the subscription host is the one it claims; it applies to the subscription download only and never to the core download or to model/tool traffic.'},
+  proxyEnv: {type:'boolean',description:'For configure: whether the running proxy is published to HTTPS_PROXY/HTTP_PROXY/ALL_PROXY and NO_PROXY while it runs, then restored on stop. Default true. Needed by clients that read the environment instead of the Host dispatcher - the Codex/GPT upstream resolves its proxy that way and cannot reach chatgpt.com without it. NO_PROXY keeps localhost, 127.0.0.1, deepseek.com and .cn direct, so domestic traffic never enters the tunnel. Turn it off to keep the Host process environment untouched, at the cost of GPT access.'},
   },
   required:['action'],
 };
@@ -42,7 +43,7 @@ function validate(args) {
   for (const [key,value] of Object.entries(args)) {
     if (!parameters.properties[key] || !matchesSchema(value, parameters.properties[key])) throw new Error('Invalid action parameters.');
   }
-  const allowed = {status:[],install:[],import:['url','yaml'],refresh:[],usage:[],traffic:[],start:[],stop:[],select:['node'],test:[],latency:[],configure:['autoStart','timeZone','autoRefreshHours','insecureSubscriptionTls']}[args.action];
+  const allowed = {status:[],install:[],import:['url','yaml'],refresh:[],usage:[],traffic:[],start:[],stop:[],select:['node'],test:[],latency:[],configure:['autoStart','timeZone','autoRefreshHours','insecureSubscriptionTls','proxyEnv']}[args.action];
   if (Object.keys(args).some(key=>key!=='action'&&!allowed.includes(key))) throw new Error('Parameters do not match the action.');
   return args;
 }

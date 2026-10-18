@@ -124,6 +124,16 @@ export async function reservePorts() {
   } finally { await Promise.all(servers.map(s => new Promise(resolve => s.close(resolve)))); }
 }
 
+/**
+ * Environment-reader clients (notably the Codex/GPT upstream, which resolves its
+ * proxy from `HTTPS_PROXY`/`NO_PROXY` and plain `node:https`, never from the
+ * undici global dispatcher) can only be routed by these variables. Same-region
+ * and loopback hosts stay direct: DeepSeek needs no tunnel, and sending the
+ * local port through itself would loop.
+ */
+const PROXY_ENV_KEYS = ['HTTPS_PROXY','https_proxy','HTTP_PROXY','http_proxy','ALL_PROXY','all_proxy','NO_PROXY','no_proxy'];
+const PROXY_ENV_DIRECT = 'localhost,127.0.0.1,deepseek.com,.cn';
+
 export function createProcessDispatcher({ mixedPort, proxyPassword }) {
   const proxy = `http://127.0.0.1:${mixedPort}`;
   const authorization = `Basic ${Buffer.from(`dsh:${proxyPassword}`).toString('base64')}`;
@@ -142,13 +152,14 @@ export class MihomoController {
     this.spawn = options.spawn ?? spawn;
     this.ports = options.reservePorts ?? reservePorts;
     this.probeImpl = options.probe;
-    this.state = { timeZone: null, autoStart: false, subscriptionUrl: '', nodes: [], raw: null, dns: null, insecureTls: 0, insecureSubscriptionTls: false, selected: '', updatedAt: null, userInfo: null, userInfoAt: null, importInfo: null, autoRefreshHours: 0, lastRefreshAt: null, lastRefreshErrorAt: null, lastRefreshError: null };
+    this.state = { timeZone: null, autoStart: false, subscriptionUrl: '', nodes: [], raw: null, dns: null, insecureTls: 0, insecureSubscriptionTls: false, proxyEnv: true, selected: '', updatedAt: null, userInfo: null, userInfoAt: null, importInfo: null, autoRefreshHours: 0, lastRefreshAt: null, lastRefreshErrorAt: null, lastRefreshError: null };
     this.kernel = null;
     this.phase = 'stopped'; this.error = null;
     this.child = null; this.session = null; this.dispatcher = null; this.logStream = null;
     this.queue = Promise.resolve(); this.disposed = false;
     this.refreshTimer = null; this.refreshing = false;
     this.relaxed = null;
+    this.envSaved = null;
     this.report = null;
   }
   file(name) { return path.join(this.dataDir,name); }
@@ -165,6 +176,33 @@ export class MihomoController {
   relaxedDispatcher() {
     this.relaxed ??= new Agent({ connect: { rejectUnauthorized: false } });
     return this.relaxed;
+  }
+
+  /**
+   * Publishes the running proxy to environment-reading clients and remembers the
+   * previous values so stop() can put the process back exactly as it was. A
+   * crash without stop() would leave them set, which is why they are also cleared
+   * by dispose() and re-applied only while a session exists.
+   */
+  applyProxyEnv() {
+    if (this.state.proxyEnv !== true || this.envSaved || !this.session) return;
+    const proxy = `http://dsh:${this.session.proxyPassword}@127.0.0.1:${this.session.mixedPort}`;
+    const saved = {};
+    for (const key of PROXY_ENV_KEYS) saved[key] = process.env[key];
+    for (const key of ['HTTPS_PROXY','https_proxy','HTTP_PROXY','http_proxy','ALL_PROXY','all_proxy']) process.env[key] = proxy;
+    const merged = [saved.NO_PROXY, saved.no_proxy, PROXY_ENV_DIRECT].map(v => v?.trim?.()).filter(Boolean).join(',');
+    process.env.NO_PROXY = merged;
+    process.env.no_proxy = merged;
+    this.envSaved = saved;
+  }
+
+  clearProxyEnv() {
+    if (!this.envSaved) return;
+    for (const key of PROXY_ENV_KEYS) {
+      if (this.envSaved[key] === undefined) delete process.env[key];
+      else process.env[key] = this.envSaved[key];
+    }
+    this.envSaved = null;
   }
 
   /**
@@ -213,6 +251,9 @@ export class MihomoController {
         dns: sanitizeDns(stored.dns),
         insecureTls: nodes.filter(n => n['skip-cert-verify'] === true).length,
         insecureSubscriptionTls: stored.insecureSubscriptionTls === true,
+        // Absent in older state files, which predate the option: those installs
+        // asked for the tunnel to be usable by GPT clients, so default it on.
+        proxyEnv: stored.proxyEnv !== false,
         selected: typeof stored.selected === 'string' ? stored.selected : '',
         updatedAt: typeof stored.updatedAt === 'string' ? stored.updatedAt : null,
         userInfo: normalizeUserInfo(stored.userInfo),
@@ -336,6 +377,8 @@ export class MihomoController {
       timeZone: this.state.timeZone,
       timeZoneScope: 'Model date/time interpretation in all Host sessions; not browser/system clocks or saved reminders.',
       autoStart: this.state.autoStart,
+      proxyEnv: this.state.proxyEnv,
+      proxyEnvActive: this.envSaved !== null,
       subscriptionConfigured: !!this.state.subscriptionUrl,
       usage: this.usageView(),
       importInfo: this.state.importInfo,
@@ -400,7 +443,7 @@ export class MihomoController {
       case 'stop': await this.stop(); break;
       case 'select': await this.select(args.node,signal); break;
       case 'configure': {
-        if (args.autoStart === undefined && args.timeZone === undefined && args.autoRefreshHours === undefined && args.insecureSubscriptionTls === undefined) throw new Error('Configuration requires autoStart, timeZone, autoRefreshHours, or insecureSubscriptionTls.');
+        if (args.autoStart === undefined && args.timeZone === undefined && args.autoRefreshHours === undefined && args.insecureSubscriptionTls === undefined && args.proxyEnv === undefined) throw new Error('Configuration requires autoStart, timeZone, autoRefreshHours, insecureSubscriptionTls, or proxyEnv.');
         const next = {...this.state};
         if (args.autoStart !== undefined) {
           if (typeof args.autoStart !== 'boolean') throw new Error('Auto-start must be true or false.');
@@ -415,7 +458,14 @@ export class MihomoController {
           if (typeof args.insecureSubscriptionTls !== 'boolean') throw new Error('Subscription certificate verification must be on or off.');
           next.insecureSubscriptionTls = args.insecureSubscriptionTls;
         }
-        await this.save(next); break;
+        if (args.proxyEnv !== undefined) {
+          if (typeof args.proxyEnv !== 'boolean') throw new Error('Proxy environment export must be on or off.');
+          next.proxyEnv = args.proxyEnv;
+        }
+        await this.save(next);
+        // The switch must take effect on the running session, not only after a restart.
+        if (next.proxyEnv) this.applyProxyEnv(); else this.clearProxyEnv();
+        break;
       }
       case 'test': return this.test(signal);
       case 'latency': return this.latency(signal);
@@ -697,6 +747,7 @@ export class MihomoController {
       this.dispatcher = createProcessDispatcher(this.session);
       setGlobalDispatcher(this.dispatcher);
       this.phase = 'running'; this.error = null;
+      this.applyProxyEnv();
       try {
         // Never leave the Host on a proxy that cannot carry its own traffic.
         await (this.probeImpl ?? (sig => this.probe(sig)))(signal);
@@ -854,11 +905,13 @@ export class MihomoController {
     }
     await this.closeLog();
     this.session = null;
+    this.clearProxyEnv();
     this.phase = 'stopped'; this.error = null;
   }
 
   async dispose() {
     this.disposed = true;
+    this.clearProxyEnv();
     if (this.refreshTimer) { clearInterval(this.refreshTimer); this.refreshTimer = null; }
     await this.queue;
     await this.stop();

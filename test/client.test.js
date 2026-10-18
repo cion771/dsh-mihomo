@@ -39,6 +39,7 @@ async function mount(overrides = {}) {
     if (body.action === 'configure' && Object.hasOwn(body, 'timeZone')) currentStatus = { ...currentStatus, timeZone: body.timeZone || null };
     if (body.action === 'configure' && Object.hasOwn(body, 'autoRefreshHours')) currentStatus = { ...currentStatus, autoRefreshHours: body.autoRefreshHours, nextRefreshAt: body.autoRefreshHours ? currentStatus.nextRefreshAt : null };
     if (body.action === 'configure' && Object.hasOwn(body, 'insecureSubscriptionTls')) currentStatus = { ...currentStatus, insecureSubscriptionTls: body.insecureSubscriptionTls };
+    if (body.action === 'configure' && Object.hasOwn(body, 'proxyEnv')) currentStatus = { ...currentStatus, proxyEnv: body.proxyEnv };
     if (body.action === 'traffic') {
       trafficReads += 1;
       const result = { up: 2048, down: 4096 * trafficReads, active: 1, at: 'now', connections: [{ host: 'api.deepseek.com', chain: ['DIRECT'], rule: 'Match', download: 1024, upload: 512 }] };
@@ -300,6 +301,22 @@ test('the subscription certificate switch is off by default and states what turn
     assert.equal(box.checked, true, 'the switch shows the saved choice');
     const warn = document.querySelector('.dsh-mh-notice.dsh-mh-warn');
     assert.ok(warn && warn.textContent.includes('insecureOn'), 'the panel keeps saying verification is off');
+  } finally { await app.close(); }
+});
+
+test('the environment switch is on by default and can be withdrawn', async () => {
+  const app = await mount();
+  try {
+    const { document } = app.dom.window;
+    const row = [...document.querySelectorAll('.dsh-mh-check')].find(node => node.textContent.includes('proxyEnv'));
+    assert.ok(row, 'the switch renders next to the auto-start preference');
+    const box = row.querySelector('input[type="checkbox"]');
+    assert.equal(box.checked, true, 'published by default so clients that read the environment work');
+    assert.ok(document.body.textContent.includes('proxyEnvHint'), 'the reader is told what it changes');
+
+    await app.click(box);
+    assert.ok(app.requests.some(r => r.action === 'configure' && r.proxyEnv === false), 'turning it off reaches the Host');
+    assert.equal(box.checked, false, 'the panel shows the saved choice');
   } finally { await app.close(); }
 });
 

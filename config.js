@@ -60,12 +60,11 @@ const md5 = value => createHash('md5').update(value).digest('hex');
 
 /**
  * Rules the plugin wins before any inherited routing. Private ranges must not
- * reach a remote node (it would fail and leak nothing useful), and same-region
- * names are faster and safer direct. The model API is deliberately NOT in this
- * list: it is routed to the plugin's selector by `assembleConfig` instead, so the
- * node the operator picked also carries the model traffic.
+ * reach a remote node (it would fail and leak nothing useful), and the model API
+ * is domestic: tunnelling it adds a foreign round trip to every request.
  */
 export const PRIORITY_RULES = [
+  'DOMAIN-SUFFIX,deepseek.com,DIRECT',
   'DOMAIN-SUFFIX,cn,DIRECT',
   'DOMAIN-SUFFIX,localhost,DIRECT',
   'IP-CIDR,127.0.0.0/8,DIRECT,no-resolve',
@@ -76,6 +75,13 @@ export const PRIORITY_RULES = [
   'IP-CIDR6,::1/128,DIRECT,no-resolve',
   'IP-CIDR6,fc00::/7,DIRECT,no-resolve',
 ];
+
+/**
+ * Hosts that only answer through the tunnel. The Codex/GPT upstream is why this
+ * list exists: it is reachable only via the node while DeepSeek is not, so these
+ * are pinned to the selector and a provider rule cannot quietly send them direct.
+ */
+export const UPSTREAM_HOSTS = ['chatgpt.com', 'openai.com', 'oaistatic.com', 'oaiusercontent.com'];
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -265,12 +271,9 @@ export function assembleConfig(options) {
   if (!matched) rules.push(`MATCH,${GROUP}`);
   report.rules = rules.length;
 
-  // The model API goes through the selector this plugin owns, ahead of every
-  // inherited rule: the point of the switch is that clicking a node changes what
-  // the agent's own requests do, and a provider rule must not be able to quietly
-  // send them elsewhere. It costs a foreign round trip per request when the node
-  // is overseas, which is the trade the operator asked for.
-  const modelRule = `DOMAIN-SUFFIX,deepseek.com,${GROUP}`;
+  // Hosts that are unreachable without the tunnel go through the selector the
+  // operator picked, ahead of every inherited rule.
+  const upstreamRules = UPSTREAM_HOSTS.map(host => `DOMAIN-SUFFIX,${host},${GROUP}`);
 
   const config = {
     ...base,
@@ -292,7 +295,7 @@ export function assembleConfig(options) {
     profile: { 'store-selected': false, 'store-fake-ip': false },
     proxies: nodes,
     'proxy-groups': groups,
-    rules: [modelRule, ...PRIORITY_RULES, ...rules],
+    rules: [...upstreamRules, ...PRIORITY_RULES, ...rules],
   };
   for (const key of ['proxy-providers', 'rule-providers']) if (!(key in config)) delete config[key];
   return { config, report };

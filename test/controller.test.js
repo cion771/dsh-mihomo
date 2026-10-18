@@ -223,7 +223,7 @@ test('model time-zone preference validates, persists and can be disabled without
     assert.equal(saved.timeZone,'Asia/Tokyo');
     assert.equal(saved.autoStart,false);
     await assert.rejects(controller.run({action:'configure',timeZone:'+08:00'}),/Invalid IANA/);
-    await assert.rejects(controller.run({action:'configure'}),/requires autoStart, timeZone, autoRefreshHours, or insecureSubscriptionTls/);
+    await assert.rejects(controller.run({action:'configure'}),/requires autoStart, timeZone, autoRefreshHours, insecureSubscriptionTls, or proxyEnv/);
     const reload=await new MihomoController(dir).init();
     try {
       assert.equal(reload.status().timeZone,'Asia/Tokyo');
@@ -475,4 +475,60 @@ test('the subscription TLS choice is remembered across a reload',async()=>{
     again=await new MihomoController(dir,{fetch:async()=>new Response('{}')}).init();
     assert.equal(again.status().insecureSubscriptionTls,true,'the operator does not have to repeat the choice');
   }finally{await controller.dispose();if(again)await again.dispose();await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('the running proxy is published to the environment and taken back on stop',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-mihomo-env-'));
+  const before={HTTPS_PROXY:process.env.HTTPS_PROXY,https_proxy:process.env.https_proxy,HTTP_PROXY:process.env.HTTP_PROXY,http_proxy:process.env.http_proxy,ALL_PROXY:process.env.ALL_PROXY,all_proxy:process.env.all_proxy,NO_PROXY:process.env.NO_PROXY,no_proxy:process.env.no_proxy};
+  for(const key of Object.keys(before))delete process.env[key];
+  process.env.NO_PROXY='corp.internal';
+  const controller=await new MihomoController(dir,{fetch:async()=>new Response('{}')}).init();
+  try{
+    controller.session={proxyPassword:'pw',mixedPort:30666,apiPort:30667,apiSecret:'s'};
+    controller.applyProxyEnv();
+    const proxy='http://dsh:pw@127.0.0.1:30666';
+    assert.equal(process.env.HTTPS_PROXY,proxy,'a client reading HTTPS_PROXY finds the tunnel');
+    assert.equal(process.env.HTTP_PROXY,proxy);
+    assert.equal(process.env.ALL_PROXY,proxy,'the all_proxy fallback is covered too');
+    assert.match(process.env.NO_PROXY,/corp\.internal/,'an existing bypass list is kept');
+    assert.match(process.env.NO_PROXY,/deepseek\.com/,'the domestic model API is excluded from the tunnel');
+    assert.equal(process.env.no_proxy,process.env.NO_PROXY,'both spellings agree');
+
+    controller.clearProxyEnv();
+    assert.equal(process.env.HTTPS_PROXY,undefined,'stopping restores the outer environment');
+    assert.equal(process.env.NO_PROXY,'corp.internal','the pre-existing value comes back untouched');
+  }finally{await controller.dispose();for(const [key,value] of Object.entries(before)){if(value===undefined)delete process.env[key];else process.env[key]=value;}await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('turning the environment export off withdraws it immediately',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-mihomo-env2-'));
+  const before=process.env.HTTPS_PROXY;
+  delete process.env.HTTPS_PROXY;
+  const controller=await new MihomoController(dir,{fetch:async()=>new Response('{}')}).init();
+  try{
+    controller.session={proxyPassword:'pw',mixedPort:30668,apiPort:30669,apiSecret:'s'};
+    controller.applyProxyEnv();
+    assert.ok(process.env.HTTPS_PROXY,'published first');
+    await controller.run({action:'configure',proxyEnv:false});
+    assert.equal(process.env.HTTPS_PROXY,undefined,'the switch takes effect without a restart');
+    assert.equal(controller.status().proxyEnv,false);
+    assert.equal(controller.status().proxyEnvActive,false);
+  }finally{await controller.dispose();if(before!==undefined)process.env.HTTPS_PROXY=before;await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('the environment export stays off when the operator switched it off',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-mihomo-env3-'));
+  const before=process.env.HTTPS_PROXY;
+  delete process.env.HTTPS_PROXY;
+  const first=await new MihomoController(dir,{fetch:async()=>new Response('{}')}).init();
+  try{
+    await first.run({action:'configure',proxyEnv:false});
+    const again=await new MihomoController(dir,{fetch:async()=>new Response('{}')}).init();
+    try{
+      again.session={proxyPassword:'pw',mixedPort:30670,apiPort:30671,apiSecret:'s'};
+      again.applyProxyEnv();
+      assert.equal(process.env.HTTPS_PROXY,undefined,'a saved opt-out is respected after a restart');
+      assert.equal(again.status().proxyEnv,false);
+    }finally{await again.dispose();}
+  }finally{await first.dispose();if(before!==undefined)process.env.HTTPS_PROXY=before;await fs.rm(dir,{recursive:true,force:true});}
 });

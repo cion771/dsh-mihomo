@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseNodes, parseSubscription, sanitizeDns, isLocalHost, coreEnvironment, validateSubscriptionUrl, redactLog, parseUserInfo, parseSubscriptionMeta, parseImportInfo } from '../policy.js';
-import { assembleConfig, PRIORITY_RULES } from '../config.js';
+import { assembleConfig, PRIORITY_RULES, UPSTREAM_HOSTS } from '../config.js';
 
 /** Managed document for a parsed subscription, with the values the Host would supply. */
 const assemble = (raw, nodes, extra = {}) => assembleConfig({
@@ -52,26 +52,28 @@ test('imports nodes, neutralising dangerous top-level subscription settings',()=
   assert.equal(conf.tun.enable,false);assert.equal(conf.dns.enable,false);assert.equal(conf['allow-lan'],false);
   assert.equal(conf['bind-address'],'127.0.0.1');assert.equal(conf['external-controller'],'127.0.0.1:30002');
   assert.deepEqual(conf.authentication,['dsh:password']);assert.deepEqual(conf['skip-auth-prefixes'],[]);
-  assert.deepEqual(conf.rules.slice(1,1+PRIORITY_RULES.length),PRIORITY_RULES);
-  assert.equal(conf.rules[0],'DOMAIN-SUFFIX,deepseek.com,DSH');
+  assert.deepEqual(conf.rules.slice(UPSTREAM_HOSTS.length,UPSTREAM_HOSTS.length+PRIORITY_RULES.length),PRIORITY_RULES);
+  assert.equal(conf.rules[0],'DOMAIN-SUFFIX,chatgpt.com,DSH');
   assert.equal(conf.rules.at(-1),'MATCH,DSH');
   for(const k of ['listeners','tunnels','script'])assert.equal(conf[k],undefined);
   assert.equal(conf['external-controller-pipe'],'');
 });
 
-test('same-region traffic is routed around the tunnel while the model API follows the selected node',()=>{
+test('same-region traffic is routed around the tunnel while the tunnel-only upstream follows the selected node',()=>{
   const parsed = parseSubscription(fixture);
   const rules = assemble(parsed.raw, parsed.nodes).rules;
-  // The operator picked a node on purpose: the model API must obey that choice, which means the
-  // rule has to name the selector rather than jump the queue with a hard-coded target.
-  assert.equal(rules[0],'DOMAIN-SUFFIX,deepseek.com,DSH');
-  assert.ok(!rules.includes('DOMAIN-SUFFIX,deepseek.com,DIRECT'));
+  // The operator picked a node on purpose: hosts that only answer through the tunnel must obey that
+  // choice, which means the rule names the selector rather than jumping the queue with a fixed target.
+  assert.equal(rules[0],'DOMAIN-SUFFIX,chatgpt.com,DSH');
+  assert.ok(rules.includes('DOMAIN-SUFFIX,deepseek.com,DIRECT'),'the domestic model API stays direct');
+  assert.ok(!rules.includes('DOMAIN-SUFFIX,deepseek.com,DSH'));
   assert.ok(rules.includes('DOMAIN-SUFFIX,cn,DIRECT'));
   // The catch-all stays last: anything not exempted still has to leave through the proxy.
   assert.equal(rules.filter(r=>r.startsWith('MATCH,')).length,1);
   assert.equal(rules.indexOf('MATCH,DSH'),rules.length-1);
   // Every exemption sorts before the catch-all, so none of them can be dead weight.
   for(const rule of PRIORITY_RULES) assert.ok(rules.indexOf(rule)<rules.indexOf('MATCH,DSH'),rule);
+  for(const host of UPSTREAM_HOSTS) assert.ok(rules.indexOf(`DOMAIN-SUFFIX,${host},DSH`)<rules.indexOf('MATCH,DSH'),host);
 });
 
 test('loopback/private literals bypass, public hosts do not',()=>{
